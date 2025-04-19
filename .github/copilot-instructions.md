@@ -8,16 +8,12 @@
 - Define data structures using dataclasses or named tuples
 - Properly use Context Managers (`with` statements)
 - Leverage asynchronous programming (async/await)
-- Follow security best practices (check dependencies for vulnerabilities)
-- Use `pip-tools` or `Poetry` for virtual environments and package management
+- Use `uv` for virtual environments and package management
 - Implement appropriate unit tests (pytest recommended) with test coverage
-- Write documentation strings (docstrings) in Google style or numpydoc format
-- Use `python-dotenv` or `environs` for environment variable management
 - Adhere to PEP 8 style guidelines (automatically checked with Ruff)
 - Use the new union syntax (`int | str`)
 - Write self-documenting code (reflect intent in variable and function names)
 - Implement proper exception handling and custom exception classes
-- Standardize project structure (src/ layout)
 - Use pyproject.toml for configuration management
 
 # Gradio Rules
