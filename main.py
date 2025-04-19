@@ -1,11 +1,3 @@
-"""
-ドット絵変換アプリケーション
-
-画像をドット絵（ピクセルアート）に変換するGradioベースのWebアプリケーション。
-縮小・拡大処理によるモザイク化、k-meansクラスタリングによる減色などの
-処理オプションを提供します。
-"""
-
 import asyncio
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -42,21 +34,6 @@ async def process_image(
     image: np.ndarray,
     config: PixelArtConfig
 ) -> np.ndarray:
-    """
-    画像をドット絵に変換する
-
-    Parameters
-    ----------
-    image : np.ndarray
-        入力画像
-    config : PixelArtConfig
-        変換設定
-
-    Returns
-    -------
-    np.ndarray
-        変換された画像
-    """
     # 非同期処理のシミュレーション
     await asyncio.sleep(0.01)
     
@@ -70,14 +47,16 @@ async def process_image(
             image = gaussian(image, sigma=config.gaussian_sigma, channel_axis=-1)
         case FilterType.EROSION:
             # エロージョン処理（各チャネルに対して適用）
+            size = int(config.erosion_size)  # 明示的に整数に変換
+            footprint = morphology.footprint_rectangle((size, size))
             if len(image.shape) == 3:
                 for i in range(image.shape[2]):
                     image[:, :, i] = morphology.erosion(
                         image[:, :, i],
-                        morphology.square(config.erosion_size)
+                        footprint
                     )
             else:
-                image = morphology.erosion(image, morphology.square(config.erosion_size))
+                image = morphology.erosion(image, footprint)
         case _:
             pass
     
@@ -126,31 +105,6 @@ async def pixel_art_converter(
     erosion_size: int,
     apply_kmeans: bool
 ) -> np.ndarray:
-    """
-    Gradioインターフェース用のラッパー関数
-
-    Parameters
-    ----------
-    input_img : np.ndarray
-        入力画像
-    scale_factor : float
-        縮小率
-    colors : int
-        色数
-    filter_type : str
-        フィルタータイプ
-    gaussian_sigma : float
-        ガウシアンフィルタのシグマ値
-    erosion_size : int
-        エロージョンのカーネルサイズ
-    apply_kmeans : bool
-        k-meansによる減色を適用するかどうか
-
-    Returns
-    -------
-    np.ndarray
-        変換された画像
-    """
     # フィルタータイプの文字列をEnum型に変換
     filter_enum = FilterType.NONE
     match filter_type:
@@ -176,14 +130,6 @@ async def pixel_art_converter(
 
 
 def create_ui() -> gr.Blocks:
-    """
-    Gradio UIを作成する
-
-    Returns
-    -------
-    gr.Blocks
-        Gradioのブロックインターフェース
-    """
     with gr.Blocks(title="ドット絵変換ツール") as interface:
         gr.Markdown("# 🎮 ドット絵変換ツール")
         gr.Markdown("画像をドット絵（ピクセルアート）に変換します。パラメータを調整して好みの結果を得ましょう。")
