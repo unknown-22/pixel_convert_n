@@ -1,5 +1,7 @@
 # Pixel Converter Next
 
+Gradioでドット絵化をするPythonプログラムです。
+
 仕様
 - GradioでWebUIを表示
 - 入力された画像をドット絵化(Pixel Art化)
