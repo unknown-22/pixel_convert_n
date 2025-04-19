@@ -64,6 +64,7 @@ async def process_image(
     height, width = image.shape[:2]
     
     # 前処理フィルタの適用
+    print(f"フィルタータイプ: {config.filter_type}")
     match config.filter_type:
         case FilterType.GAUSSIAN:
             image = gaussian(image, sigma=config.gaussian_sigma, channel_axis=-1)
@@ -227,23 +228,24 @@ def create_ui() -> gr.Blocks:
                         label="前処理フィルター"
                     )
                     
-                    with gr.Group(visible=False) as gaussian_group:
-                        gaussian_sigma = gr.Slider(
-                            minimum=0.1, 
-                            maximum=5.0, 
-                            value=1.0, 
-                            step=0.1, 
-                            label="ガウシアンフィルタの強さ"
-                        )
+                    # Gradio 5.xでの表示制御用のスライダーコンテナ
+                    gaussian_sigma = gr.Slider(
+                        minimum=0.1, 
+                        maximum=5.0, 
+                        value=1.0, 
+                        step=0.1, 
+                        label="ガウシアンフィルタの強さ",
+                        visible=False  # 初期状態は非表示
+                    )
                     
-                    with gr.Group(visible=False) as erosion_group:
-                        erosion_size = gr.Slider(
-                            minimum=1, 
-                            maximum=5, 
-                            value=1, 
-                            step=1, 
-                            label="エロージョンの強さ"
-                        )
+                    erosion_size = gr.Slider(
+                        minimum=1, 
+                        maximum=5, 
+                        value=1, 
+                        step=1, 
+                        label="エロージョンの強さ",
+                        visible=False  # 初期状態は非表示
+                    )
                 
                 convert_btn = gr.Button("変換", variant="primary")
             
@@ -251,28 +253,32 @@ def create_ui() -> gr.Blocks:
                 output_image = gr.Image(label="変換結果", type="numpy")
         
         # フィルタータイプに応じた設定の表示・非表示の制御
-        def update_filter_settings(filter_type):
+        def update_filter_settings(filter_type: str) -> tuple[bool, bool]:
+            """
+            選択されたフィルタータイプに基づいて、各スライダーの表示状態を更新します
+            
+            Parameters
+            ----------
+            filter_type : str
+                選択されたフィルタータイプ
+                
+            Returns
+            -------
+            tuple[bool, bool]
+                (gaussian_sigmaの表示状態, erosion_sizeの表示状態)
+            """
             match filter_type:
                 case "ガウシアンフィルタ":
-                    return {
-                        gaussian_group: gr.Group.update(visible=True),
-                        erosion_group: gr.Group.update(visible=False)
-                    }
+                    return True, False
                 case "エロージョン":
-                    return {
-                        gaussian_group: gr.Group.update(visible=False),
-                        erosion_group: gr.Group.update(visible=True)
-                    }
+                    return False, True
                 case _:
-                    return {
-                        gaussian_group: gr.Group.update(visible=False),
-                        erosion_group: gr.Group.update(visible=False)
-                    }
+                    return False, False
         
         filter_type.change(
             fn=update_filter_settings,
             inputs=filter_type,
-            outputs=[gaussian_group, erosion_group]
+            outputs=[gaussian_sigma, erosion_size]
         )
         
         # 変換ボタンのイベントハンドラ
