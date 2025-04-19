@@ -33,7 +33,7 @@ class PixelArtConfig:
 async def process_image(
     image: np.ndarray,
     config: PixelArtConfig
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     # 非同期処理のシミュレーション
     await asyncio.sleep(0.01)
     
@@ -41,7 +41,6 @@ async def process_image(
     height, width = image.shape[:2]
     
     # 前処理フィルタの適用
-    print(f"フィルタータイプ: {config.filter_type}")
     match config.filter_type:
         case FilterType.GAUSSIAN:
             image = gaussian(image, sigma=config.gaussian_sigma, channel_axis=-1)
@@ -68,6 +67,9 @@ async def process_image(
     new_height = max(1, int(height * config.scale_factor))
     small_img = pil_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
     
+    # 縮小画像をNumPy配列に変換
+    small_array = np.array(small_img)
+    
     # 拡大（ピクセルを大きく）
     pixelated_img = small_img.resize((width, height), Image.Resampling.NEAREST)
     
@@ -92,8 +94,15 @@ async def process_image(
         
         # 元の形状に戻す
         result = reduced_pixels.reshape(original_shape)
+        
+        # 縮小画像にも同じ減色処理を適用
+        small_shape = small_array.shape
+        small_pixels = small_array.reshape(-1, 3) if len(small_shape) == 3 else small_array.reshape(-1, 1)
+        small_labels = kmeans.predict(small_pixels)
+        small_reduced = centers[small_labels].reshape(small_shape)
+        small_array = small_reduced
     
-    return result.astype(np.uint8)
+    return result.astype(np.uint8), small_array.astype(np.uint8)
 
 
 async def pixel_art_converter(
@@ -104,7 +113,7 @@ async def pixel_art_converter(
     gaussian_sigma: float,
     erosion_size: int,
     apply_kmeans: bool
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     # フィルタータイプの文字列をEnum型に変換
     filter_enum = FilterType.NONE
     match filter_type:
@@ -196,7 +205,11 @@ def create_ui() -> gr.Blocks:
                 convert_btn = gr.Button("変換", variant="primary")
             
             with gr.Column():
-                output_image = gr.Image(label="変換結果", type="numpy")
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        output_image = gr.Image(label="ドット絵 (拡大後)", type="numpy")
+                    with gr.Column(scale=1):
+                        small_image = gr.Image(label="縮小画像 (拡大前)", type="numpy")
         
         # フィルタータイプに応じた設定の表示・非表示の制御
         def update_filter_settings(filter_type: str) -> tuple[bool, bool]:
@@ -239,7 +252,7 @@ def create_ui() -> gr.Blocks:
                 erosion_size,
                 apply_kmeans
             ],
-            outputs=output_image
+            outputs=[output_image, small_image]
         )
         
     return interface
