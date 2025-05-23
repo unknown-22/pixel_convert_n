@@ -94,7 +94,7 @@ async def process_image(
 
     # K-means or Custom Palette for color reduction
     if config.apply_kmeans: # Only proceed if color reduction is enabled
-        if config.palette_method == "custom" and \
+        if config.palette_method == "Custom Palette" and \
            config.custom_palette and \
            len(config.custom_palette) > 0:
             
@@ -186,7 +186,7 @@ async def pixel_art_converter(
     apply_kmeans : bool
         K-meansによる減色を適用するかどうか
     palette_method : str
-        パレット選択方法 ("kmeans" または "custom")
+        パレット選択方法 ("K-means" または "Custom Palette")
     custom_palette_str : Optional[str]
         カスタムパレットのカンマ区切りHEX文字列 (例: "#FF0000,#00FF00")
 
@@ -207,7 +207,7 @@ async def pixel_art_converter(
 
     # Parse custom_palette_str
     parsed_custom_palette: Optional[List[tuple[int, int, int]]] = None
-    if palette_method == "custom" and custom_palette_str:
+    if palette_method == "Custom Palette" and custom_palette_str:
         temp_palette = []
         hex_colors = custom_palette_str.split(',')
         valid_palette = True

@@ -49,7 +49,7 @@ def create_ui() -> gr.Blocks:
                         label="Color Reduction Method"
                     )
                     custom_palette_str = gr.Textbox(
-                        label="Custom Palette (e.g., #FF0000,#00FF00,#0000FF)",
+                        label="Custom Palette (e.g. #FFFFFF,#D8D8D8,#B4B4B4,#909090,#6C6C6C,#484848,#242424,#000000)",
                         placeholder="Enter comma-separated hex colors",
                         visible=False, # Initially hidden
                         elem_id="custom_palette_textbox"
