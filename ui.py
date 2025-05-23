@@ -37,11 +37,23 @@ def create_ui() -> gr.Blocks:
                         label="縮小率 (小さいほどドットが大きい)",
                     )
 
-                    colors = gr.Slider(
-                        minimum=2, maximum=32, value=8, step=1, label="色数"
+                    colors = gr.Slider( # This is the existing colors slider
+                        minimum=2, maximum=32, value=8, step=1, label="色数", visible=True 
                     )
 
                     apply_kmeans = gr.Checkbox(value=True, label="K-meansで減色する")
+
+                    palette_method = gr.Radio(
+                        choices=["K-means", "Custom Palette"],
+                        value="K-means",
+                        label="Color Reduction Method"
+                    )
+                    custom_palette_str = gr.Textbox(
+                        label="Custom Palette (e.g., #FF0000,#00FF00,#0000FF)",
+                        placeholder="Enter comma-separated hex colors",
+                        visible=False, # Initially hidden
+                        elem_id="custom_palette_textbox"
+                    )
 
                 with gr.Group():
                     gr.Markdown("## フィルター設定")
@@ -108,6 +120,20 @@ def create_ui() -> gr.Blocks:
             outputs=[gaussian_sigma, erosion_size],
         )
 
+        # Palette settings visibility control
+        def update_palette_settings(selection: str) -> tuple[gr.update, gr.update]:
+            if selection == "K-means":
+                return gr.update(visible=True), gr.update(visible=False)
+            elif selection == "Custom Palette":
+                return gr.update(visible=False), gr.update(visible=True)
+            return gr.update(visible=True), gr.update(visible=False) # Default fallback
+
+        palette_method.change(
+            fn=update_palette_settings,
+            inputs=palette_method,
+            outputs=[colors, custom_palette_str]
+        )
+
         # 変換ボタンのイベントハンドラ
         convert_btn.click(
             fn=pixel_art_converter,
@@ -119,6 +145,8 @@ def create_ui() -> gr.Blocks:
                 gaussian_sigma,
                 erosion_size,
                 apply_kmeans,
+                palette_method, 
+                custom_palette_str
             ],
             outputs=[output_image, small_image],
         )

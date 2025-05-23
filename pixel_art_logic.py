@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from enum import Enum, auto
+from typing import Optional, List
 
 import numpy as np
 from PIL import Image
@@ -27,6 +28,8 @@ class PixelArtConfig:
     gaussian_sigma: float = 1.0  # ガウシアンフィルタのシグマ値
     erosion_size: int = 1  # エロージョンのカーネルサイズ
     apply_kmeans: bool = True  # k-meansによる減色を適用するかどうか
+    custom_palette: Optional[List[tuple[int, int, int]]] = None # New field
+    palette_method: str = "kmeans"  # New field
 
 
 async def process_image(
@@ -87,38 +90,67 @@ async def process_image(
 
     # NumPy配列に戻す
     result = np.array(pixelated_img)
+    # small_array was already converted to NumPy array after resize
 
-    # K-meansで減色
-    if config.apply_kmeans and config.colors > 0:
-        # 画像の形状を保存
-        original_shape = result.shape
+    # K-means or Custom Palette for color reduction
+    if config.apply_kmeans: # Only proceed if color reduction is enabled
+        if config.palette_method == "custom" and \
+           config.custom_palette and \
+           len(config.custom_palette) > 0:
+            
+            # Custom Palette Logic
+            original_shape = result.shape
+            # Assuming custom palette is for color images, so reshape to (-1, 3)
+            # If original image is grayscale, this might implicitly convert it or error
+            # For robust grayscale handling with custom color palettes, image would need conversion to color first.
+            # Current logic assumes result has 3 channels if a custom palette is applied.
+            pixels = result.reshape(-1, 3) 
+            
+            custom_centers = np.array(config.custom_palette, dtype=np.float64)
+            
+            kmeans = KMeans(n_clusters=len(custom_centers), n_init=1, random_state=42)
+            kmeans.cluster_centers_ = custom_centers
+            
+            # Ensure KMeans is properly initialized. Fitting on the custom_centers themselves
+            # should be sufficient to prepare for predict, if custom_centers is not empty.
+            if custom_centers.shape[0] > 0:
+                kmeans.fit(custom_centers) # Fit on the defined palette centers.
+            
+            labels = kmeans.predict(pixels)
+            reduced_pixels = custom_centers[labels]
+            result = reduced_pixels.reshape(original_shape)
 
-        # 画像をリシェイプ（各ピクセルを1行として扱う）
-        pixels = (
-            result.reshape(-1, 3) if len(original_shape) == 3 else result.reshape(-1, 1)
-        )
+            # Apply to small_array as well
+            small_shape = small_array.shape
+            small_pixels = small_array.reshape(-1, 3) # Assuming 3 channels
+            # No need to re-fit kmeans, it's already configured with custom_centers
+            small_labels = kmeans.predict(small_pixels)
+            small_reduced = custom_centers[small_labels].reshape(small_shape)
+            small_array = small_reduced
+            
+        elif config.colors > 0: # Fallback to K-means if not custom or custom_palette invalid
+            # Existing K-means logic
+            original_shape = result.shape
+            pixels = (
+                result.reshape(-1, 3) if len(original_shape) == 3 else result.reshape(-1, 1)
+            )
+            kmeans = KMeans(n_clusters=config.colors, random_state=42, n_init=10)
+            labels = kmeans.fit_predict(pixels)
+            centers = kmeans.cluster_centers_
+            reduced_pixels = centers[labels]
+            result = reduced_pixels.reshape(original_shape)
 
-        # K-meansクラスタリングを実行
-        kmeans = KMeans(n_clusters=config.colors, random_state=42, n_init=10)
-        labels = kmeans.fit_predict(pixels)
-        centers = kmeans.cluster_centers_
-
-        # 各ピクセルをそのクラスタの中心値に置き換え
-        reduced_pixels = centers[labels]
-
-        # 元の形状に戻す
-        result = reduced_pixels.reshape(original_shape)
-
-        # 縮小画像にも同じ減色処理を適用
-        small_shape = small_array.shape
-        small_pixels = (
-            small_array.reshape(-1, 3)
-            if len(small_shape) == 3
-            else small_array.reshape(-1, 1)
-        )
-        small_labels = kmeans.predict(small_pixels)
-        small_reduced = centers[small_labels].reshape(small_shape)
-        small_array = small_reduced
+            small_shape = small_array.shape
+            small_pixels = (
+                small_array.reshape(-1, 3)
+                if len(small_shape) == 3
+                else small_array.reshape(-1, 1)
+            )
+            # Use predict here on existing kmeans model, not fit_predict
+            small_labels = kmeans.predict(small_pixels) 
+            small_reduced = centers[small_labels].reshape(small_shape)
+            small_array = small_reduced
+        # If config.colors <= 0 and not using a valid custom palette, no color reduction happens here.
 
     return result.astype(np.uint8), small_array.astype(np.uint8)
 
@@ -131,6 +163,8 @@ async def pixel_art_converter(
     gaussian_sigma: float,
     erosion_size: int,
     apply_kmeans: bool,
+    palette_method: str, # New parameter
+    custom_palette_str: Optional[str] # New parameter
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     UI用のインターフェース関数
@@ -151,6 +185,10 @@ async def pixel_art_converter(
         エロージョンのカーネルサイズ
     apply_kmeans : bool
         K-meansによる減色を適用するかどうか
+    palette_method : str
+        パレット選択方法 ("kmeans" または "custom")
+    custom_palette_str : Optional[str]
+        カスタムパレットのカンマ区切りHEX文字列 (例: "#FF0000,#00FF00")
 
     Returns
     -------
@@ -167,6 +205,30 @@ async def pixel_art_converter(
         case _:
             filter_enum = FilterType.NONE
 
+    # Parse custom_palette_str
+    parsed_custom_palette: Optional[List[tuple[int, int, int]]] = None
+    if palette_method == "custom" and custom_palette_str:
+        temp_palette = []
+        hex_colors = custom_palette_str.split(',')
+        valid_palette = True
+        for hex_color in hex_colors:
+            hex_color = hex_color.strip()
+            if hex_color.startswith('#') and len(hex_color) == 7:
+                try:
+                    r = int(hex_color[1:3], 16)
+                    g = int(hex_color[3:5], 16)
+                    b = int(hex_color[5:7], 16)
+                    temp_palette.append((r, g, b))
+                except ValueError:
+                    valid_palette = False # Invalid hex char
+                    break 
+            else:
+                valid_palette = False # Invalid format
+                break
+        if valid_palette and temp_palette: # Ensure temp_palette is not empty
+            parsed_custom_palette = temp_palette
+        # If not valid_palette or temp_palette is empty, parsed_custom_palette remains None
+
     # 設定を作成
     config = PixelArtConfig(
         scale_factor=scale_factor,
@@ -175,6 +237,8 @@ async def pixel_art_converter(
         gaussian_sigma=gaussian_sigma,
         erosion_size=erosion_size,
         apply_kmeans=apply_kmeans,
+        palette_method=palette_method,
+        custom_palette=parsed_custom_palette
     )
 
     # 画像処理を実行
