@@ -44,6 +44,29 @@ def create_ui() -> gr.Blocks:
                     apply_kmeans = gr.Checkbox(value=True, label="K-meansで減色する")
 
                 with gr.Group():
+                    gr.Markdown("## 画像調整")
+                    saturation_level = gr.Radio(
+                        choices=["なし", "弱", "強"],
+                        value="なし",
+                        label="彩度調整",
+                    )
+
+                    apply_color_temperature = gr.Checkbox(
+                        value=False, 
+                        label="色温度調整"
+                    )
+
+                    color_temperature_offset = gr.Slider(
+                        minimum=-35,
+                        maximum=35,
+                        value=0,
+                        step=1,
+                        label="色温度調整 (±1で±100K、0=標準6500K)",
+                        info="プラス値で暖色系（赤み）、マイナス値で寒色系（青み）",
+                        visible=False,  # 初期状態は非表示
+                    )
+
+                with gr.Group():
                     gr.Markdown("## フィルター設定")
                     filter_type = gr.Radio(
                         choices=["なし", "ガウシアンフィルタ", "エロージョン"],
@@ -80,7 +103,7 @@ def create_ui() -> gr.Blocks:
                         small_image = gr.Image(label="縮小画像 (拡大前)", type="numpy")
 
         # フィルタータイプに応じた設定の表示・非表示の制御
-        def update_filter_settings(filter_type: str) -> tuple[bool, bool]:
+        def update_filter_settings(filter_type: str) -> tuple[gr.update, gr.update]:
             """
             選択されたフィルタータイプに基づいて、各スライダーの表示状態を更新します
 
@@ -91,21 +114,44 @@ def create_ui() -> gr.Blocks:
 
             Returns
             -------
-            tuple[bool, bool]
+            tuple[gr.update, gr.update]
                 (gaussian_sigmaの表示状態, erosion_sizeの表示状態)
             """
             match filter_type:
                 case "ガウシアンフィルタ":
-                    return True, False
+                    return gr.update(visible=True), gr.update(visible=False)
                 case "エロージョン":
-                    return False, True
+                    return gr.update(visible=False), gr.update(visible=True)
                 case _:
-                    return False, False
+                    return gr.update(visible=False), gr.update(visible=False)
+
+        # 色温度調整の表示・非表示制御
+        def update_color_temperature_visibility(apply_temp: bool) -> gr.update:
+            """
+            色温度調整チェックボックスの状態に基づいて、色温度スライダーの表示状態を更新します
+
+            Parameters
+            ----------
+            apply_temp : bool
+                色温度調整を適用するかどうか
+
+            Returns
+            -------
+            gr.update
+                色温度スライダーの表示状態更新オブジェクト
+            """
+            return gr.update(visible=apply_temp)
 
         filter_type.change(
             fn=update_filter_settings,
             inputs=filter_type,
             outputs=[gaussian_sigma, erosion_size],
+        )
+
+        apply_color_temperature.change(
+            fn=update_color_temperature_visibility,
+            inputs=apply_color_temperature,
+            outputs=color_temperature_offset,
         )
 
         # 変換ボタンのイベントハンドラ
@@ -119,6 +165,9 @@ def create_ui() -> gr.Blocks:
                 gaussian_sigma,
                 erosion_size,
                 apply_kmeans,
+                saturation_level,
+                apply_color_temperature,
+                color_temperature_offset,
             ],
             outputs=[output_image, small_image],
         )
