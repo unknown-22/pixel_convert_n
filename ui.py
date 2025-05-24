@@ -52,7 +52,7 @@ def create_ui() -> gr.Blocks:
                     )
 
                     apply_color_temperature = gr.Checkbox(
-                        value=True, 
+                        value=False, 
                         label="色温度調整"
                     )
 
@@ -62,7 +62,7 @@ def create_ui() -> gr.Blocks:
                         value=6500,
                         step=500,
                         label="色温度 (K)",
-                        visible=True,
+                        visible=False,  # 初期状態は非表示
                     )
 
                 with gr.Group():
@@ -102,7 +102,7 @@ def create_ui() -> gr.Blocks:
                         small_image = gr.Image(label="縮小画像 (拡大前)", type="numpy")
 
         # フィルタータイプに応じた設定の表示・非表示の制御
-        def update_filter_settings(filter_type: str) -> tuple[bool, bool]:
+        def update_filter_settings(filter_type: str) -> tuple[gr.update, gr.update]:
             """
             選択されたフィルタータイプに基づいて、各スライダーの表示状態を更新します
 
@@ -113,19 +113,19 @@ def create_ui() -> gr.Blocks:
 
             Returns
             -------
-            tuple[bool, bool]
+            tuple[gr.update, gr.update]
                 (gaussian_sigmaの表示状態, erosion_sizeの表示状態)
             """
             match filter_type:
                 case "ガウシアンフィルタ":
-                    return True, False
+                    return gr.update(visible=True), gr.update(visible=False)
                 case "エロージョン":
-                    return False, True
+                    return gr.update(visible=False), gr.update(visible=True)
                 case _:
-                    return False, False
+                    return gr.update(visible=False), gr.update(visible=False)
 
         # 色温度調整の表示・非表示制御
-        def update_color_temperature_visibility(apply_temp: bool) -> bool:
+        def update_color_temperature_visibility(apply_temp: bool) -> gr.update:
             """
             色温度調整チェックボックスの状態に基づいて、色温度スライダーの表示状態を更新します
 
@@ -136,10 +136,10 @@ def create_ui() -> gr.Blocks:
 
             Returns
             -------
-            bool
-                色温度スライダーの表示状態
+            gr.update
+                色温度スライダーの表示状態更新オブジェクト
             """
-            return apply_temp
+            return gr.update(visible=apply_temp)
 
         filter_type.change(
             fn=update_filter_settings,
