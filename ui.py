@@ -51,6 +51,20 @@ def create_ui() -> gr.Blocks:
                         label="彩度調整",
                     )
 
+                    apply_color_temperature = gr.Checkbox(
+                        value=True, 
+                        label="色温度調整"
+                    )
+
+                    color_temperature = gr.Slider(
+                        minimum=3000,
+                        maximum=10000,
+                        value=6500,
+                        step=500,
+                        label="色温度 (K)",
+                        visible=True,
+                    )
+
                 with gr.Group():
                     gr.Markdown("## フィルター設定")
                     filter_type = gr.Radio(
@@ -110,10 +124,33 @@ def create_ui() -> gr.Blocks:
                 case _:
                     return False, False
 
+        # 色温度調整の表示・非表示制御
+        def update_color_temperature_visibility(apply_temp: bool) -> bool:
+            """
+            色温度調整チェックボックスの状態に基づいて、色温度スライダーの表示状態を更新します
+
+            Parameters
+            ----------
+            apply_temp : bool
+                色温度調整を適用するかどうか
+
+            Returns
+            -------
+            bool
+                色温度スライダーの表示状態
+            """
+            return apply_temp
+
         filter_type.change(
             fn=update_filter_settings,
             inputs=filter_type,
             outputs=[gaussian_sigma, erosion_size],
+        )
+
+        apply_color_temperature.change(
+            fn=update_color_temperature_visibility,
+            inputs=apply_color_temperature,
+            outputs=color_temperature,
         )
 
         # 変換ボタンのイベントハンドラ
@@ -128,6 +165,8 @@ def create_ui() -> gr.Blocks:
                 erosion_size,
                 apply_kmeans,
                 saturation_level,
+                apply_color_temperature,
+                color_temperature,
             ],
             outputs=[output_image, small_image],
         )
