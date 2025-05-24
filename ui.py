@@ -56,12 +56,13 @@ def create_ui() -> gr.Blocks:
                         label="色温度調整"
                     )
 
-                    color_temperature = gr.Slider(
-                        minimum=3000,
-                        maximum=10000,
-                        value=6500,
-                        step=500,
-                        label="色温度 (K)",
+                    color_temperature_offset = gr.Slider(
+                        minimum=-35,
+                        maximum=35,
+                        value=0,
+                        step=1,
+                        label="色温度調整 (±1で±100K、0=標準6500K)",
+                        info="プラス値で暖色系（赤み）、マイナス値で寒色系（青み）",
                         visible=False,  # 初期状態は非表示
                     )
 
@@ -150,7 +151,7 @@ def create_ui() -> gr.Blocks:
         apply_color_temperature.change(
             fn=update_color_temperature_visibility,
             inputs=apply_color_temperature,
-            outputs=color_temperature,
+            outputs=color_temperature_offset,
         )
 
         # 変換ボタンのイベントハンドラ
@@ -166,7 +167,7 @@ def create_ui() -> gr.Blocks:
                 apply_kmeans,
                 saturation_level,
                 apply_color_temperature,
-                color_temperature,
+                color_temperature_offset,
             ],
             outputs=[output_image, small_image],
         )

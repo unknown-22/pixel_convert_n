@@ -37,10 +37,10 @@ class PixelArtConfig:
     apply_kmeans: bool = True  # k-meansによる減色を適用するかどうか
     saturation_level: SaturationLevel = SaturationLevel.NONE  # 彩度調整レベル
     apply_color_temperature: bool = False  # 色温度調整を適用するかどうか
-    color_temperature: int = 6500  # 色温度（K）
+    color_temperature_offset: int = 0  # 色温度オフセット（0を基準として±100K単位）
 
 
-def adjust_color_temperature(image: np.ndarray, temperature: int) -> np.ndarray:
+def adjust_color_temperature(image: np.ndarray, temperature_offset: int) -> np.ndarray:
     """
     画像の色温度を調整する
 
@@ -48,14 +48,21 @@ def adjust_color_temperature(image: np.ndarray, temperature: int) -> np.ndarray:
     ----------
     image : np.ndarray
         調整する画像（RGB形式）
-    temperature : int
-        色温度（K）、3000-10000の範囲
+    temperature_offset : int
+        色温度オフセット（0を基準として±100K単位で指定）
+        プラス値: 暖色系（色温度を下げる）
+        マイナス値: 寒色系（色温度を上げる）
 
     Returns
     -------
     np.ndarray
         色温度調整後の画像
     """
+    # ベース色温度は6500Kとし、オフセットを逆向きに適用
+    # プラス値で暖色系にするため、色温度を下げる
+    base_temperature = 6500
+    temperature = base_temperature - (temperature_offset * 100)
+    
     # 色温度に基づくRGB係数の計算
     # 参考: http://www.tannerhelland.com/4435/convert-temperature-rgb-algorithm-code/
     
@@ -136,7 +143,7 @@ async def process_image(
         # 0-1の範囲で正規化されていることを確認
         if image.dtype != np.float64:
             image = image.astype(np.float64) / 255.0
-        image = adjust_color_temperature(image, config.color_temperature)
+        image = adjust_color_temperature(image, config.color_temperature_offset)
 
     # 彩度調整（前処理として適用）
     if config.saturation_level != SaturationLevel.NONE:
@@ -158,40 +165,6 @@ async def process_image(
         enhancer = ImageEnhance.Color(pil_img)
         pil_img = enhancer.enhance(saturation_factor)
         
-        # NumPy配列に戻す
-        image = np.array(pil_img).astype(np.float64) / 255.0
-
-    # 色温度調整（オプション）
-    if config.apply_color_temperature:
-        # NumPy配列をPIL Imageに変換
-        pil_img = Image.fromarray(
-            (image * 255).astype(np.uint8) if image.dtype == np.float64 else image
-        )
-
-        # 色温度に基づくフィルタを適用
-        temperature = config.color_temperature
-        if temperature < 1000:
-            temperature = 1000
-        elif temperature > 40000:
-            temperature = 40000
-
-        # 色温度調整を適用
-        pil_img = pil_img.convert("RGB")
-        r, g, b = pil_img.split()
-
-        # 色温度に応じた係数で各チャネルを調整
-        if temperature < 6500:
-            # 暖色系（赤みを強く）
-            r = r.point(lambda i: i * (1 + (6500 - temperature) / 6500))
-            b = b.point(lambda i: i * (1 - (6500 - temperature) / 6500))
-        else:
-            # 寒色系（青みを強く）
-            r = r.point(lambda i: i * (1 - (temperature - 6500) / 6500))
-            b = b.point(lambda i: i * (1 + (temperature - 6500) / 6500))
-
-        # チャネルをマージして画像を再構築
-        pil_img = Image.merge("RGB", (r, g, b))
-
         # NumPy配列に戻す
         image = np.array(pil_img).astype(np.float64) / 255.0
 
@@ -275,7 +248,7 @@ async def pixel_art_converter(
     apply_kmeans: bool,
     saturation_level: str,
     apply_color_temperature: bool,
-    color_temperature: int,
+    color_temperature_offset: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     UI用のインターフェース関数
@@ -300,8 +273,8 @@ async def pixel_art_converter(
         彩度調整レベルの文字列
     apply_color_temperature : bool
         色温度調整を適用するかどうか
-    color_temperature : int
-        色温度（K）
+    color_temperature_offset : int
+        色温度オフセット（0を基準として±100K単位で指定）
 
     Returns
     -------
@@ -338,7 +311,7 @@ async def pixel_art_converter(
         apply_kmeans=apply_kmeans,
         saturation_level=saturation_enum,
         apply_color_temperature=apply_color_temperature,
-        color_temperature=color_temperature,
+        color_temperature_offset=color_temperature_offset,
     )
 
     # 画像処理を実行
