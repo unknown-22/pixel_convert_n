@@ -3,10 +3,18 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance
 from skimage import morphology
 from skimage.filters import gaussian
 from sklearn.cluster import KMeans
+
+
+class SaturationLevel(Enum):
+    """彩度調整レベルの列挙型"""
+
+    NONE = auto()
+    WEAK = auto()
+    STRONG = auto()
 
 
 class FilterType(Enum):
@@ -27,6 +35,7 @@ class PixelArtConfig:
     gaussian_sigma: float = 1.0  # ガウシアンフィルタのシグマ値
     erosion_size: int = 1  # エロージョンのカーネルサイズ
     apply_kmeans: bool = True  # k-meansによる減色を適用するかどうか
+    saturation_level: SaturationLevel = SaturationLevel.NONE  # 彩度調整レベル
 
 
 async def process_image(
@@ -52,6 +61,29 @@ async def process_image(
 
     # 入力画像のサイズを取得
     height, width = image.shape[:2]
+
+    # 彩度調整（前処理として適用）
+    if config.saturation_level != SaturationLevel.NONE:
+        # NumPy配列をPIL Imageに変換
+        pil_img = Image.fromarray(
+            (image * 255).astype(np.uint8) if image.dtype == np.float64 else image
+        )
+        
+        # 彩度調整係数を設定
+        match config.saturation_level:
+            case SaturationLevel.WEAK:
+                saturation_factor = 1.3
+            case SaturationLevel.STRONG:
+                saturation_factor = 1.8
+            case _:
+                saturation_factor = 1.0
+        
+        # 彩度調整を適用
+        enhancer = ImageEnhance.Color(pil_img)
+        pil_img = enhancer.enhance(saturation_factor)
+        
+        # NumPy配列に戻す
+        image = np.array(pil_img).astype(np.float64) / 255.0
 
     # 前処理フィルタの適用
     match config.filter_type:
@@ -131,6 +163,7 @@ async def pixel_art_converter(
     gaussian_sigma: float,
     erosion_size: int,
     apply_kmeans: bool,
+    saturation_level: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     UI用のインターフェース関数
@@ -151,6 +184,8 @@ async def pixel_art_converter(
         エロージョンのカーネルサイズ
     apply_kmeans : bool
         K-meansによる減色を適用するかどうか
+    saturation_level : str
+        彩度調整レベルの文字列
 
     Returns
     -------
@@ -167,6 +202,16 @@ async def pixel_art_converter(
         case _:
             filter_enum = FilterType.NONE
 
+    # 彩度調整レベルの文字列をEnum型に変換
+    saturation_enum = SaturationLevel.NONE
+    match saturation_level:
+        case "弱":
+            saturation_enum = SaturationLevel.WEAK
+        case "強":
+            saturation_enum = SaturationLevel.STRONG
+        case _:
+            saturation_enum = SaturationLevel.NONE
+
     # 設定を作成
     config = PixelArtConfig(
         scale_factor=scale_factor,
@@ -175,6 +220,7 @@ async def pixel_art_converter(
         gaussian_sigma=gaussian_sigma,
         erosion_size=erosion_size,
         apply_kmeans=apply_kmeans,
+        saturation_level=saturation_enum,
     )
 
     # 画像処理を実行

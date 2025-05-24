@@ -44,6 +44,14 @@ def create_ui() -> gr.Blocks:
                     apply_kmeans = gr.Checkbox(value=True, label="K-meansで減色する")
 
                 with gr.Group():
+                    gr.Markdown("## 画像調整")
+                    saturation_level = gr.Radio(
+                        choices=["なし", "弱", "強"],
+                        value="なし",
+                        label="彩度調整",
+                    )
+
+                with gr.Group():
                     gr.Markdown("## フィルター設定")
                     filter_type = gr.Radio(
                         choices=["なし", "ガウシアンフィルタ", "エロージョン"],
@@ -119,6 +127,7 @@ def create_ui() -> gr.Blocks:
                 gaussian_sigma,
                 erosion_size,
                 apply_kmeans,
+                saturation_level,
             ],
             outputs=[output_image, small_image],
         )
