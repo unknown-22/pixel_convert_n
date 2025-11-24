@@ -114,45 +114,71 @@ def adjust_color_temperature(image: np.ndarray, temperature_offset: int) -> np.n
     return adjusted_image
 
 
+def _split_alpha(image: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+    """
+    画像をRGBとアルファに分離する
+
+    Parameters
+    ----------
+    image : np.ndarray
+        入力画像
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray | None]
+        (RGB画像, アルファチャネルまたはNone)
+    """
+    if image.ndim == 3 and image.shape[2] == 4:
+        rgb, alpha = image[:, :, :3], image[:, :, 3]
+        return rgb, alpha
+    return image, None
+
+
+def _merge_alpha(rgb: np.ndarray, alpha: np.ndarray | None) -> np.ndarray:
+    """
+    RGB画像とアルファチャネルを結合する
+    """
+    if alpha is None:
+        return rgb
+    return np.dstack((rgb, alpha))
+
+
 async def process_image(
     image: np.ndarray, config: PixelArtConfig
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     画像をドット絵に変換する処理を行う
 
-    Parameters
-    ----------
-    image : np.ndarray
-        変換する元の画像
-    config : PixelArtConfig
-        変換設定パラメータ
-
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         (ドット絵画像, 縮小画像)
     """
-    # 非同期処理のシミュレーション
     await asyncio.sleep(0.01)
 
-    # 入力画像のサイズを取得
-    height, width = image.shape[:2]
-
-    # 色温度調整（前処理として適用）
-    if config.apply_color_temperature:
-        # 0-1の範囲で正規化されていることを確認
-        if image.dtype != np.float64:
-            image = image.astype(np.float64) / 255.0
-        image = adjust_color_temperature(image, config.color_temperature_offset)
-
-    # 彩度調整（前処理として適用）
-    if config.saturation_level != SaturationLevel.NONE:
-        # NumPy配列をPIL Imageに変換
-        pil_img = Image.fromarray(
-            (image * 255).astype(np.uint8) if image.dtype == np.float64 else image
+    # アルファ分離と正規化
+    rgb_image, alpha_channel = _split_alpha(image)
+    height, width = rgb_image.shape[:2]
+    rgb_image = (
+        rgb_image.astype(np.float64) / 255.0
+        if rgb_image.dtype != np.float64
+        else np.clip(rgb_image, 0, 1)
+    )
+    if alpha_channel is None:
+        alpha_channel = np.ones((height, width), dtype=np.float64)
+    else:
+        alpha_channel = (
+            alpha_channel.astype(np.float64) / 255.0
+            if alpha_channel.dtype != np.float64
+            else np.clip(alpha_channel, 0, 1)
         )
-        
-        # 彩度調整係数を設定
+
+    # 前処理（アルファ非考慮領域はRGB値を持つが後でプリマルチプライする）
+    if config.apply_color_temperature:
+        rgb_image = adjust_color_temperature(rgb_image, config.color_temperature_offset)
+
+    if config.saturation_level != SaturationLevel.NONE:
+        pil_img = Image.fromarray((rgb_image * 255).astype(np.uint8))
         match config.saturation_level:
             case SaturationLevel.WEAK:
                 saturation_factor = 1.3
@@ -160,82 +186,98 @@ async def process_image(
                 saturation_factor = 1.8
             case _:
                 saturation_factor = 1.0
-        
-        # 彩度調整を適用
         enhancer = ImageEnhance.Color(pil_img)
         pil_img = enhancer.enhance(saturation_factor)
-        
-        # NumPy配列に戻す
-        image = np.array(pil_img).astype(np.float64) / 255.0
+        rgb_image = np.array(pil_img).astype(np.float64) / 255.0
 
-    # 前処理フィルタの適用
+    # プリマルチプライしてからスケーリング・フィルタを適用
+    rgb_premult = rgb_image * alpha_channel[..., None]
+
     match config.filter_type:
         case FilterType.GAUSSIAN:
-            image = gaussian(image, sigma=config.gaussian_sigma, channel_axis=-1)
+            rgb_premult = gaussian(
+                rgb_premult, sigma=config.gaussian_sigma, channel_axis=-1
+            )
         case FilterType.EROSION:
-            # エロージョン処理（各チャネルに対して適用）
-            size = int(config.erosion_size)  # 明示的に整数に変換
+            size = int(config.erosion_size)
             footprint = morphology.footprint_rectangle((size, size))
-            if len(image.shape) == 3:
-                for i in range(image.shape[2]):
-                    image[:, :, i] = morphology.erosion(image[:, :, i], footprint)
-            else:
-                image = morphology.erosion(image, footprint)
+            for i in range(rgb_premult.shape[2]):
+                rgb_premult[:, :, i] = morphology.erosion(
+                    rgb_premult[:, :, i], footprint
+                )
         case _:
             pass
 
-    # PILを使用して縮小→拡大（モザイク化）
+    # RGBA（プリマルチプライ済みRGB+アルファ）でリサイズ
     pil_img = Image.fromarray(
-        (image * 255).astype(np.uint8) if image.dtype == np.float64 else image
+        np.dstack(
+            (
+                (np.clip(rgb_premult, 0, 1) * 255).astype(np.uint8),
+                (np.clip(alpha_channel, 0, 1) * 255).astype(np.uint8),
+            )
+        ),
+        mode="RGBA",
     )
 
-    # 縮小
     new_width = max(1, int(width * config.scale_factor))
     new_height = max(1, int(height * config.scale_factor))
     small_img = pil_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-    # 縮小画像をNumPy配列に変換
-    small_array = np.array(small_img)
+    small_rgba = np.array(small_img).astype(np.float64) / 255.0
+    small_alpha_array = small_rgba[:, :, 3]
+    small_array_premult = small_rgba[:, :, :3]
 
-    # 拡大（ピクセルを大きく）
     pixelated_img = small_img.resize((width, height), Image.Resampling.NEAREST)
+    pixelated_rgba = np.array(pixelated_img).astype(np.float64) / 255.0
+    alpha_result = pixelated_rgba[:, :, 3]
+    result_premult = pixelated_rgba[:, :, :3]
 
-    # NumPy配列に戻す
-    result = np.array(pixelated_img)
+    # 透過エッジの白化防止: アルファを二値化し、透明部のRGBを強制ゼロ
+    alpha_threshold = 0.5
+    alpha_result = (alpha_result > alpha_threshold).astype(np.float64)
+    small_alpha_array = (small_alpha_array > alpha_threshold).astype(np.float64)
+    result_premult *= alpha_result[..., None]
+    small_array_premult *= small_alpha_array[..., None]
 
-    # K-meansで減色
+    # K-meansはプリマルチプライRGBで実施（アルファは除外）
     if config.apply_kmeans and config.colors > 0:
-        # 画像の形状を保存
-        original_shape = result.shape
+        original_shape = result_premult.shape
+        pixels = result_premult.reshape(-1, 3)
 
-        # 画像をリシェイプ（各ピクセルを1行として扱う）
-        pixels = (
-            result.reshape(-1, 3) if len(original_shape) == 3 else result.reshape(-1, 1)
-        )
-
-        # K-meansクラスタリングを実行
         kmeans = KMeans(n_clusters=config.colors, random_state=42, n_init=10)
         labels = kmeans.fit_predict(pixels)
         centers = kmeans.cluster_centers_
 
-        # 各ピクセルをそのクラスタの中心値に置き換え
-        reduced_pixels = centers[labels]
+        result_premult = centers[labels].reshape(original_shape)
 
-        # 元の形状に戻す
-        result = reduced_pixels.reshape(original_shape)
-
-        # 縮小画像にも同じ減色処理を適用
-        small_shape = small_array.shape
-        small_pixels = (
-            small_array.reshape(-1, 3)
-            if len(small_shape) == 3
-            else small_array.reshape(-1, 1)
-        )
+        small_pixels = small_array_premult.reshape(-1, 3)
         small_labels = kmeans.predict(small_pixels)
-        small_reduced = centers[small_labels].reshape(small_shape)
-        small_array = small_reduced
+        small_array_premult = centers[small_labels].reshape(small_array_premult.shape)
 
-    return result.astype(np.uint8), small_array.astype(np.uint8)
+    # アンプリマルチで元の色に戻す（透明周辺の白浮きを防ぐ）
+    eps = 1e-8
+    alpha_safe = np.maximum(alpha_result, eps)
+    result_rgb = np.where(
+        alpha_result[..., None] > 0, result_premult / alpha_safe[..., None], 0
+    )
+
+    small_alpha_safe = np.maximum(small_alpha_array, eps)
+    small_rgb = np.where(
+        small_alpha_array[..., None] > 0,
+        small_array_premult / small_alpha_safe[..., None],
+        0,
+    )
+
+    result = _merge_alpha(
+        (np.clip(result_rgb, 0, 1) * 255).astype(np.uint8),
+        (np.clip(alpha_result, 0, 1) * 255).astype(np.uint8),
+    )
+    small_array = _merge_alpha(
+        (np.clip(small_rgb, 0, 1) * 255).astype(np.uint8),
+        (np.clip(small_alpha_array, 0, 1) * 255).astype(np.uint8),
+    )
+
+    return result, small_array
 
 
 async def pixel_art_converter(

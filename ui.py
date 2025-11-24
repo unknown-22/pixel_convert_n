@@ -24,6 +24,8 @@ def create_ui() -> gr.Blocks:
                     label="元の画像",
                     type="numpy",
                     sources="upload",
+                    format="png",
+                    image_mode="RGBA",  # 透過情報を保持
                     elem_classes="input-image",
                 )
 
@@ -38,7 +40,7 @@ def create_ui() -> gr.Blocks:
                     )
 
                     colors = gr.Slider(
-                        minimum=2, maximum=32, value=8, step=1, label="色数"
+                        minimum=1, maximum=32, value=8, step=1, label="色数"
                     )
 
                     apply_kmeans = gr.Checkbox(value=True, label="K-meansで減色する")
@@ -98,9 +100,19 @@ def create_ui() -> gr.Blocks:
             with gr.Column():
                 with gr.Row():
                     with gr.Column(scale=3):
-                        output_image = gr.Image(label="ドット絵 (拡大後)", type="numpy")
+                        output_image = gr.Image(
+                            label="ドット絵 (拡大後)",
+                            type="numpy",
+                            format="png",
+                            image_mode="RGBA",  # 透過を表示
+                        )
                     with gr.Column(scale=1):
-                        small_image = gr.Image(label="縮小画像 (拡大前)", type="numpy")
+                        small_image = gr.Image(
+                            label="縮小画像 (拡大前)",
+                            type="numpy",
+                            format="png",
+                            image_mode="RGBA",  # 透過を表示
+                        )
 
         # フィルタータイプに応じた設定の表示・非表示の制御
         def update_filter_settings(filter_type: str) -> tuple[gr.update, gr.update]:
