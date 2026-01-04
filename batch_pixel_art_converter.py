@@ -130,7 +130,7 @@ async def convert_one(path: Path, args: argparse.Namespace) -> Path:
     with Image.open(path) as img:
         input_array = np.array(img.convert("RGBA"))
 
-    pixelated, _ = await pixel_art_converter(
+    _, small_array = await pixel_art_converter(
         input_array,
         scale_factor=args.scale_factor,
         colors=args.colors,
@@ -144,7 +144,7 @@ async def convert_one(path: Path, args: argparse.Namespace) -> Path:
     )
 
     output_path = path.with_name(f"{path.stem}_converted{path.suffix}")
-    Image.fromarray(pixelated).save(output_path)
+    Image.fromarray(small_array).save(output_path)
     return output_path
 
 
