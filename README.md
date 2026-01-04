@@ -27,6 +27,32 @@ TODO
 - scikit‑learn
 - gradio
 
+### バッチ変換CLI
+
+Gradio を使わずに、ディレクトリ内の PNG を再帰的にドット絵化して `*_converted.png` として保存するスクリプトを追加しました。
+
+実行例:
+```bash
+python batch_pixel_art_converter.py \
+  /path/to/directory \
+  --scale-factor 0.15 \
+  --colors 32 \
+  --apply-kmeans \
+  --saturation-level weak \
+  --filter-type none
+```
+
+主なオプション（未指定は PixelArtConfig のデフォルト）
+- `--scale-factor` : 縮小率（例 0.15）
+- `--colors` : 減色後の色数
+- `--filter-type` : `none` / `gaussian` / `erosion`
+- `--gaussian-sigma` : ガウシアンフィルタのシグマ
+- `--erosion-size` : エロージョンのカーネルサイズ
+- `--apply-kmeans` / `--no-apply-kmeans`
+- `--saturation-level` : `none` / `weak` / `strong`
+- `--apply-color-temperature` / `--no-apply-color-temperature`
+- `--color-temperature-offset` : 色温度オフセット（推奨 -35〜35）
+
 ### 📝 これまで決まった仕様まとめ
 
 - 📦 **使用ライブラリ**  
