@@ -49,21 +49,23 @@ class PixelArtTests(unittest.TestCase):
         for method in ResizeMethod:
             for filter_type in FilterType:
                 with self.subTest(method=method, filter_type=filter_type):
-                    options = dict(
-                        resize_method=method,
-                        filter_type=filter_type,
-                        apply_erosion=True,
-                        erosion_size=3,
-                        colors=1,
-                        scale_factor=0.5,
-                    )
+                    options = {
+                        "resize_method": method,
+                        "filter_type": filter_type,
+                        "apply_erosion": True,
+                        "erosion_size": 3,
+                        "colors": 1,
+                        "scale_factor": 0.5,
+                    }
                     _, small = self.convert(image, **options)
                     _, other = self.convert(alternate, **options)
                     np.testing.assert_array_equal(small, other)
                     np.testing.assert_array_equal(small[small[..., 3] == 0], 0)
                     np.testing.assert_allclose(
                         small[small[..., 3] > 0, :3],
-                        np.tile([200, 100, 50], (np.count_nonzero(small[..., 3]), 1)),
+                        np.full_like(
+                            small[small[..., 3] > 0, :3], [200, 100, 50]
+                        ),
                         atol=1,
                     )
 

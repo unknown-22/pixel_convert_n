@@ -195,7 +195,7 @@ async def run(args: argparse.Namespace) -> None:
         try:
             output_path = await convert_one(path, args)
             print(f"converted: {path} -> {output_path}")
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             print(f"failed: {path} ({exc})")
 
 

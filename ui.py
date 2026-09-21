@@ -1,3 +1,5 @@
+from typing import Any
+
 import gradio as gr
 
 from pixel_art_logic import pixel_art_converter
@@ -125,22 +127,21 @@ def create_ui() -> gr.Blocks:
 
                 convert_btn = gr.Button("変換", variant="primary")
 
-            with gr.Column():
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        output_image = gr.Image(
-                            label="ドット絵 (拡大後)",
-                            type="numpy",
-                            format="png",
-                            image_mode="RGBA",  # 透過を表示
-                        )
-                    with gr.Column(scale=1):
-                        small_image = gr.Image(
-                            label="縮小画像 (拡大前)",
-                            type="numpy",
-                            format="png",
-                            image_mode="RGBA",  # 透過を表示
-                        )
+            with gr.Column(), gr.Row():
+                with gr.Column(scale=3):
+                    output_image = gr.Image(
+                        label="ドット絵 (拡大後)",
+                        type="numpy",
+                        format="png",
+                        image_mode="RGBA",  # 透過を表示
+                    )
+                with gr.Column(scale=1):
+                    small_image = gr.Image(
+                        label="縮小画像 (拡大前)",
+                        type="numpy",
+                        format="png",
+                        image_mode="RGBA",  # 透過を表示
+                    )
 
         def update_filter_settings(filter_type: str) -> tuple[dict, dict, dict]:
             return (
@@ -156,7 +157,7 @@ def create_ui() -> gr.Blocks:
         )
 
         # 色温度調整の表示・非表示制御
-        def update_color_temperature_visibility(apply_temp: bool) -> gr.update:
+        def update_color_temperature_visibility(apply_temp: bool) -> dict[str, Any]:
             """
             色温度調整チェックボックスの状態に基づいて、色温度スライダーの表示状態を更新します
 
@@ -167,7 +168,7 @@ def create_ui() -> gr.Blocks:
 
             Returns
             -------
-            gr.update
+            dict[str, Any]
                 色温度スライダーの表示状態更新オブジェクト
             """
             return gr.update(visible=apply_temp)
