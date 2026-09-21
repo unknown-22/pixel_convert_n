@@ -53,33 +53,31 @@ python batch_pixel_art_converter.py \
 - `--apply-color-temperature` / `--no-apply-color-temperature`
 - `--color-temperature-offset` : 色温度オフセット（推奨 -35〜35）
 
-### 📝 これまで決まった仕様まとめ
+### 変換処理と画質の設定
 
-- 📦 **使用ライブラリ**  
-  - Pillow : 画像の読み込み／保存  
-  - NumPy : 配列・数値演算  
-  - scikit‑image : リサイズ（モザイク化）、平滑化フィルタ、形態学処理（erode など）  
-  - scikit‑learn : `KMeans` で減色（k 色クラスタリング）  
-  - Gradio : Web UI（インターフェース）
+処理順序は「色調整 → エロージョン（任意）→ 平滑化（任意）→ 縮小 → 可視画素のみでK-means減色 → 最近傍拡大」です。
+WebUIでは拡大画像と縮小画像を表示します。CLIは従来どおり縮小画像を保存します。
 
-- 🔧 **入力パラメータ**  
-  - `path_in` / `path_out` : 入力・出力ファイルパス  
-  - `scale` : モザイク化用の縮小率（例 0.1 → 1/10 サイズ）  
-  - `k` : 残す色数（クラスタ数）  
-  - `smooth` (真偽) : ガウシアンなどで平滑化するか  
-  - `erode` (真偽) : 形態学的エロージョンをかけるか  
+- 縮小方法: `nearest`（既定）または `lanczos`。WebUIの「縮小方法」、CLIの `--resize-method` で選択します。
+- 平滑化: なし／ガウシアン／バイラテラル。バイラテラルは輪郭を保ちながら細かな色変化を抑えます。
+- エロージョン: 平滑化と独立して有効化でき、先に適用されます。サイズ1は変化なし、3からの比較を推奨します。
+- バイラテラル: 15×15近傍を使用。色差範囲はRGB 0〜1単位（既定0.1）、距離範囲は入力画像のピクセル単位（既定3）です。参考ツールのOpenCV実装と数値的に同一ではありません。
+- 透過: リサイズ時はRGBとアルファを乗算して処理し、元の色を復元した後にアルファを閾値0.5で二値化します。透明画素は減色の学習から除外します。
 
-- 🖼 **処理フロー**  
-  1. 画像読み込み（RGB → `uint8`）  
-  2. **縮小→拡大（Nearest）** でモザイク化  
-  3. 必要に応じて  
-     - 平滑化 : `skimage.filters.gaussian` など  
-     - エロージョン : `skimage.morphology.erosion`  
-  4. 画素を k 色に **`KMeans` でクラスタリング** → 代表色に置換  
-  5. `uint8` に戻し、Pillow で保存  
+```bash
+. .venv/bin/activate
+python batch_pixel_art_converter.py /path/to/directory \
+  --scale-factor 0.25 --colors 16 --resize-method nearest \
+  --filter-type bilateral --bilateral-sigma-color 0.1 \
+  --bilateral-sigma-spatial 3 --apply-erosion --erosion-size 3
+```
 
-- ⚙️ **実装時の注意**  
-  - scikit‑image 関数は `float32 [0–1]` を返すことが多い → `img_as_ubyte()` で戻す  
-  - リサイズは `order=0`（最近傍補間）かつ `anti_aliasing=False`  
-  - `KMeans(n_init="auto")` を使うと scikit‑learn 1.4+ で警告なし  
-  - 処理速度をさらに上げたい／機能を増やしたい場合のみ OpenCV 併用を検討  
+既存の `--filter-type erosion` も引き続き利用できます。平滑化と併用する場合は `--apply-erosion` を指定してください。
+
+### 検証
+
+```bash
+. .venv/bin/activate
+ruff check
+python -m unittest discover -s tests -v
+```

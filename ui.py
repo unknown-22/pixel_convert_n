@@ -39,6 +39,15 @@ def create_ui() -> gr.Blocks:
                         label="縮小率 (小さいほどドットが大きい)",
                     )
 
+                    resize_method = gr.Radio(
+                        choices=[
+                            ("NEAREST（最近傍）", "nearest"),
+                            ("LANCZOS", "lanczos"),
+                        ],
+                        value="nearest",
+                        label="縮小方法",
+                    )
+
                     colors = gr.Slider(
                         minimum=1, maximum=32, value=8, step=1, label="色数"
                     )
@@ -54,8 +63,7 @@ def create_ui() -> gr.Blocks:
                     )
 
                     apply_color_temperature = gr.Checkbox(
-                        value=False, 
-                        label="色温度調整"
+                        value=False, label="色温度調整"
                     )
 
                     color_temperature_offset = gr.Slider(
@@ -71,9 +79,9 @@ def create_ui() -> gr.Blocks:
                 with gr.Group():
                     gr.Markdown("## フィルター設定")
                     filter_type = gr.Radio(
-                        choices=["なし", "ガウシアンフィルタ", "エロージョン"],
+                        choices=["なし", "ガウシアンフィルタ", "バイラテラルフィルタ"],
                         value="なし",
-                        label="前処理フィルター",
+                        label="平滑化フィルター",
                     )
 
                     # Gradio 5.xでの表示制御用のスライダーコンテナ
@@ -86,12 +94,32 @@ def create_ui() -> gr.Blocks:
                         visible=False,  # 初期状態は非表示
                     )
 
+                    bilateral_sigma_color = gr.Slider(
+                        minimum=0.01,
+                        maximum=0.5,
+                        value=0.1,
+                        step=0.01,
+                        label="バイラテラルの色差範囲",
+                        visible=False,
+                    )
+                    bilateral_sigma_spatial = gr.Slider(
+                        minimum=1,
+                        maximum=20,
+                        value=3,
+                        step=1,
+                        label="バイラテラルの距離範囲",
+                        visible=False,
+                    )
+                    apply_erosion = gr.Checkbox(
+                        value=False,
+                        label="エロージョンを適用（平滑化の前）",
+                    )
                     erosion_size = gr.Slider(
                         minimum=1,
                         maximum=5,
-                        value=1,
+                        value=3,
                         step=1,
-                        label="エロージョンの強さ",
+                        label="エロージョンのカーネルサイズ",
                         visible=False,  # 初期状態は非表示
                     )
 
@@ -114,28 +142,18 @@ def create_ui() -> gr.Blocks:
                             image_mode="RGBA",  # 透過を表示
                         )
 
-        # フィルタータイプに応じた設定の表示・非表示の制御
-        def update_filter_settings(filter_type: str) -> tuple[gr.update, gr.update]:
-            """
-            選択されたフィルタータイプに基づいて、各スライダーの表示状態を更新します
+        def update_filter_settings(filter_type: str) -> tuple[dict, dict, dict]:
+            return (
+                gr.update(visible=filter_type == "ガウシアンフィルタ"),
+                gr.update(visible=filter_type == "バイラテラルフィルタ"),
+                gr.update(visible=filter_type == "バイラテラルフィルタ"),
+            )
 
-            Parameters
-            ----------
-            filter_type : str
-                選択されたフィルタータイプ
-
-            Returns
-            -------
-            tuple[gr.update, gr.update]
-                (gaussian_sigmaの表示状態, erosion_sizeの表示状態)
-            """
-            match filter_type:
-                case "ガウシアンフィルタ":
-                    return gr.update(visible=True), gr.update(visible=False)
-                case "エロージョン":
-                    return gr.update(visible=False), gr.update(visible=True)
-                case _:
-                    return gr.update(visible=False), gr.update(visible=False)
+        apply_erosion.change(
+            fn=lambda enabled: gr.update(visible=enabled),
+            inputs=apply_erosion,
+            outputs=erosion_size,
+        )
 
         # 色温度調整の表示・非表示制御
         def update_color_temperature_visibility(apply_temp: bool) -> gr.update:
@@ -157,7 +175,7 @@ def create_ui() -> gr.Blocks:
         filter_type.change(
             fn=update_filter_settings,
             inputs=filter_type,
-            outputs=[gaussian_sigma, erosion_size],
+            outputs=[gaussian_sigma, bilateral_sigma_color, bilateral_sigma_spatial],
         )
 
         apply_color_temperature.change(
@@ -180,6 +198,10 @@ def create_ui() -> gr.Blocks:
                 saturation_level,
                 apply_color_temperature,
                 color_temperature_offset,
+                resize_method,
+                apply_erosion,
+                bilateral_sigma_color,
+                bilateral_sigma_spatial,
             ],
             outputs=[output_image, small_image],
         )

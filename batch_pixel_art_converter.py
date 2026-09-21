@@ -19,6 +19,8 @@ def _filter_enum_to_cli(value: FilterType) -> str:
     match value:
         case FilterType.GAUSSIAN:
             return "gaussian"
+        case FilterType.BILATERAL:
+            return "bilateral"
         case FilterType.EROSION:
             return "erosion"
         case _:
@@ -39,6 +41,8 @@ def _filter_cli_to_label(value: str) -> str:
     match value:
         case "gaussian":
             return "ガウシアンフィルタ"
+        case "bilateral":
+            return "バイラテラルフィルタ"
         case "erosion":
             return "エロージョン"
         case _:
@@ -79,9 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--filter-type",
-        choices=("none", "gaussian", "erosion"),
+        choices=("none", "gaussian", "bilateral", "erosion"),
         default=_filter_enum_to_cli(defaults.filter_type),
-        help="フィルター種別 (none/gaussian/erosion)",
+        help="フィルター種別 (none/gaussian/bilateral/erosion)",
     )
     parser.add_argument(
         "--gaussian-sigma",
@@ -119,6 +123,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=defaults.color_temperature_offset,
         help="色温度オフセット (-35〜35 推奨)",
     )
+    parser.add_argument(
+        "--resize-method",
+        choices=("nearest", "lanczos"),
+        default=defaults.resize_method.value,
+        help="縮小方法（既定: nearest）",
+    )
+    parser.add_argument(
+        "--apply-erosion",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.apply_erosion,
+        help="平滑化の前にエロージョンを適用",
+    )
+    parser.add_argument(
+        "--bilateral-sigma-color",
+        type=float,
+        default=defaults.bilateral_sigma_color,
+        help="バイラテラルの色差範囲（RGB 0〜1単位）",
+    )
+    parser.add_argument(
+        "--bilateral-sigma-spatial",
+        type=float,
+        default=defaults.bilateral_sigma_spatial,
+        help="バイラテラルの距離範囲（入力画像のピクセル単位）",
+    )
     return parser
 
 
@@ -132,6 +160,10 @@ async def convert_one(path: Path, args: argparse.Namespace) -> Path:
 
     _, small_array = await pixel_art_converter(
         input_array,
+        resize_method=args.resize_method,
+        apply_erosion=args.apply_erosion,
+        bilateral_sigma_color=args.bilateral_sigma_color,
+        bilateral_sigma_spatial=args.bilateral_sigma_spatial,
         scale_factor=args.scale_factor,
         colors=args.colors,
         filter_type=_filter_cli_to_label(args.filter_type),

@@ -22,7 +22,15 @@ class FilterType(Enum):
 
     NONE = auto()
     GAUSSIAN = auto()
-    EROSION = auto()
+    EROSION = auto()  # 既存の設定との互換性を維持
+    BILATERAL = auto()
+
+
+class ResizeMethod(Enum):
+    """縮小時の補間方式。拡大には常に最近傍を使う。"""
+
+    NEAREST = "nearest"
+    LANCZOS = "lanczos"
 
 
 @dataclass
@@ -38,6 +46,11 @@ class PixelArtConfig:
     saturation_level: SaturationLevel = SaturationLevel.NONE  # 彩度調整レベル
     apply_color_temperature: bool = False  # 色温度調整を適用するかどうか
     color_temperature_offset: int = 0  # 色温度オフセット（0を基準として±100K単位）
+
+    resize_method: ResizeMethod = ResizeMethod.NEAREST
+    apply_erosion: bool = False
+    bilateral_sigma_color: float = 0.1  # RGB [0, 1] に対する色差
+    bilateral_sigma_spatial: float = 3.0  # 入力画像上のピクセル単位
 
 
 def adjust_color_temperature(image: np.ndarray, temperature_offset: int) -> np.ndarray:
@@ -62,30 +75,30 @@ def adjust_color_temperature(image: np.ndarray, temperature_offset: int) -> np.n
     # プラス値で暖色系にするため、色温度を下げる
     base_temperature = 6500
     temperature = base_temperature - (temperature_offset * 100)
-    
+
     # 色温度に基づくRGB係数の計算
     # 参考: http://www.tannerhelland.com/4435/convert-temperature-rgb-algorithm-code/
-    
+
     temp = max(3000, min(10000, temperature))  # 範囲を制限
     temp = temp / 100
-    
+
     # 赤成分の計算
     if temp <= 66:
         red = 255
     else:
         red = temp - 60
-        red = 329.698727446 * (red ** -0.1332047592)
+        red = 329.698727446 * (red**-0.1332047592)
         red = max(0, min(255, red))
-    
+
     # 緑成分の計算
     if temp <= 66:
         green = temp
         green = 99.4708025861 * np.log(green) - 161.1195681661
     else:
         green = temp - 60
-        green = 288.1221695283 * (green ** -0.0755148492)
+        green = 288.1221695283 * (green**-0.0755148492)
     green = max(0, min(255, green))
-    
+
     # 青成分の計算
     if temp >= 66:
         blue = 255
@@ -95,22 +108,22 @@ def adjust_color_temperature(image: np.ndarray, temperature_offset: int) -> np.n
         blue = temp - 10
         blue = 138.5177312231 * np.log(blue) - 305.0447927307
         blue = max(0, min(255, blue))
-    
+
     # RGB係数を正規化
     red_factor = red / 255.0
     green_factor = green / 255.0
     blue_factor = blue / 255.0
-    
+
     # 画像に色温度補正を適用
     adjusted_image = image.copy()
     if len(adjusted_image.shape) == 3:  # カラー画像の場合
-        adjusted_image[:, :, 0] *= red_factor    # R
+        adjusted_image[:, :, 0] *= red_factor  # R
         adjusted_image[:, :, 1] *= green_factor  # G
-        adjusted_image[:, :, 2] *= blue_factor   # B
-        
+        adjusted_image[:, :, 2] *= blue_factor  # B
+
         # 値の範囲をクランプ
         adjusted_image = np.clip(adjusted_image, 0, 1)
-    
+
     return adjusted_image
 
 
@@ -134,150 +147,176 @@ def _split_alpha(image: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
     return image, None
 
 
-def _merge_alpha(rgb: np.ndarray, alpha: np.ndarray | None) -> np.ndarray:
-    """
-    RGB画像とアルファチャネルを結合する
-    """
+def _bilateral_filter(
+    rgb: np.ndarray, alpha: np.ndarray, sigma_color: float, sigma_spatial: float
+) -> np.ndarray:
+    """15×15の近傍で、色差・距離・アルファによる重み付き平滑化を行う。"""
+    radius = 7
+    height, width = alpha.shape
+    padded_rgb = np.pad(rgb, ((radius, radius), (radius, radius), (0, 0)), mode="edge")
+    padded_alpha = np.pad(alpha, radius, mode="edge")
+    total = np.zeros_like(rgb)
+    weights = np.zeros_like(alpha)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            y, x = dy + radius, dx + radius
+            neighbor = padded_rgb[y : y + height, x : x + width]
+            neighbor_alpha = padded_alpha[y : y + height, x : x + width]
+            distance = np.sum((neighbor - rgb) ** 2, axis=-1)
+            weight = (
+                np.exp(
+                    -distance / (2 * sigma_color**2)
+                    - (dx**2 + dy**2) / (2 * sigma_spatial**2)
+                )
+                * neighbor_alpha
+            )
+            total += neighbor * weight[..., None]
+            weights += weight
+    return np.divide(
+        total, weights[..., None], out=rgb.copy(), where=weights[..., None] > 0
+    )
+
+
+def _apply_filters(
+    rgb: np.ndarray, alpha: np.ndarray, config: PixelArtConfig
+) -> np.ndarray:
+    """エロージョン→平滑化。透明画素の隠れたRGBは参照しない。"""
+    if config.apply_erosion or config.filter_type == FilterType.EROSION:
+        footprint = morphology.footprint_rectangle(
+            (config.erosion_size, config.erosion_size)
+        )
+        visible_rgb = np.where(alpha[..., None] > 0, rgb, np.inf)
+        rgb = np.stack(
+            [
+                morphology.erosion(visible_rgb[..., channel], footprint)
+                for channel in range(3)
+            ],
+            axis=-1,
+        )
+        rgb = np.where(np.isfinite(rgb), rgb, 0)
+    if config.filter_type == FilterType.GAUSSIAN:
+        numerator = gaussian(
+            rgb * alpha[..., None], sigma=config.gaussian_sigma, channel_axis=-1
+        )
+        denominator = gaussian(alpha, sigma=config.gaussian_sigma)
+        rgb = np.divide(
+            numerator,
+            denominator[..., None],
+            out=np.zeros_like(rgb),
+            where=denominator[..., None] > 1e-8,
+        )
+    elif config.filter_type == FilterType.BILATERAL:
+        rgb = _bilateral_filter(
+            rgb, alpha, config.bilateral_sigma_color, config.bilateral_sigma_spatial
+        )
+    return np.where(alpha[..., None] > 0, rgb, 0)
+
+
+def _resize_rgba(
+    rgb: np.ndarray, alpha: np.ndarray, size: tuple[int, int], method: ResizeMethod
+) -> tuple[np.ndarray, np.ndarray]:
+    """乗算済みRGBとアルファを個別にリサイズし、二値化前に色を復元する。"""
+    resampling = Image.Resampling[method.name]
+
+    def resize_plane(plane: np.ndarray) -> np.ndarray:
+        return np.asarray(
+            Image.fromarray(plane.astype(np.float32)).resize(size, resampling)
+        )
+
+    # LANCZOSのオーバーシュートもRGBと同じ比率で割り戻す。
+    # 先にアルファだけをクランプすると透明境界の色が明るくなる。
+    small_alpha = resize_plane(alpha)
+    premultiplied = np.stack(
+        [resize_plane(rgb[..., channel] * alpha) for channel in range(3)], axis=-1
+    )
+    small_rgb = np.divide(
+        premultiplied,
+        small_alpha[..., None],
+        out=np.zeros_like(premultiplied),
+        where=small_alpha[..., None] > 1e-8,
+    )
+    return np.clip(small_rgb, 0, 1), small_alpha > 0.5
+
+
+def _quantize(rgb: np.ndarray, visible: np.ndarray, colors: int) -> np.ndarray:
+    """縮小画像の可視画素のみでパレットを学習する。"""
+    result = np.zeros_like(rgb)
+    pixels = rgb[visible]
+    if not len(pixels):
+        return result
+    count = min(colors, len(np.unique(pixels, axis=0)))
+    kmeans = KMeans(n_clusters=count, random_state=42, n_init=10)
+    labels = kmeans.fit_predict(pixels)
+    result[visible] = kmeans.cluster_centers_[labels]
+    return result
+
+
+def _process_image(
+    image: np.ndarray, config: PixelArtConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    """前処理→縮小→減色→最近傍拡大。出力は従来どおりRGBA。"""
+    if (
+        image is None
+        or image.ndim != 3
+        or image.shape[2] not in (3, 4)
+        or not image.size
+    ):
+        raise ValueError("RGBまたはRGBA画像を指定してください。")
+    if not 0 < config.scale_factor <= 1:
+        raise ValueError("縮小率は0より大きく1以下にしてください。")
+    if config.colors < 1 or config.erosion_size < 1:
+        raise ValueError("色数とエロージョンのサイズは1以上にしてください。")
+    if any(
+        not np.isfinite(value) or value <= 0
+        for value in (
+            config.gaussian_sigma,
+            config.bilateral_sigma_color,
+            config.bilateral_sigma_spatial,
+        )
+    ):
+        raise ValueError("フィルターの強さは正の有限値にしてください。")
+    normalized = image.astype(np.float32)
+    if np.issubdtype(image.dtype, np.integer):
+        normalized /= np.iinfo(image.dtype).max
+    if not np.all(np.isfinite(normalized)):
+        raise ValueError("画像に非有限値が含まれています。")
+    normalized = np.clip(normalized, 0, 1)
+    rgb, alpha = _split_alpha(normalized)
+    height, width = rgb.shape[:2]
     if alpha is None:
-        return rgb
-    return np.dstack((rgb, alpha))
+        alpha = np.ones((height, width), dtype=np.float32)
+    if config.apply_color_temperature:
+        rgb = adjust_color_temperature(rgb, config.color_temperature_offset)
+    if config.saturation_level != SaturationLevel.NONE:
+        factor = 1.3 if config.saturation_level == SaturationLevel.WEAK else 1.8
+        pil_img = Image.fromarray(np.rint(rgb * 255).astype(np.uint8))
+        rgb = (
+            np.asarray(ImageEnhance.Color(pil_img).enhance(factor)).astype(np.float32)
+            / 255
+        )
+    rgb = _apply_filters(rgb, alpha, config)
+    size = (
+        max(1, int(width * config.scale_factor)),
+        max(1, int(height * config.scale_factor)),
+    )
+    rgb, visible = _resize_rgba(rgb, alpha, size, config.resize_method)
+    if config.apply_kmeans:
+        rgb = _quantize(rgb, visible, config.colors)
+    rgb = np.where(visible[..., None], rgb, 0)
+    small_array = np.dstack(
+        (np.rint(rgb * 255).astype(np.uint8), visible.astype(np.uint8) * 255)
+    )
+    result = np.asarray(
+        Image.fromarray(small_array).resize((width, height), Image.Resampling.NEAREST)
+    )
+    return result, small_array
 
 
 async def process_image(
     image: np.ndarray, config: PixelArtConfig
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    画像をドット絵に変換する処理を行う
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        (ドット絵画像, 縮小画像)
-    """
-    await asyncio.sleep(0.01)
-
-    # アルファ分離と正規化
-    rgb_image, alpha_channel = _split_alpha(image)
-    height, width = rgb_image.shape[:2]
-    rgb_image = (
-        rgb_image.astype(np.float64) / 255.0
-        if rgb_image.dtype != np.float64
-        else np.clip(rgb_image, 0, 1)
-    )
-    if alpha_channel is None:
-        alpha_channel = np.ones((height, width), dtype=np.float64)
-    else:
-        alpha_channel = (
-            alpha_channel.astype(np.float64) / 255.0
-            if alpha_channel.dtype != np.float64
-            else np.clip(alpha_channel, 0, 1)
-        )
-
-    # 前処理（アルファ非考慮領域はRGB値を持つが後でプリマルチプライする）
-    if config.apply_color_temperature:
-        rgb_image = adjust_color_temperature(rgb_image, config.color_temperature_offset)
-
-    if config.saturation_level != SaturationLevel.NONE:
-        pil_img = Image.fromarray((rgb_image * 255).astype(np.uint8))
-        match config.saturation_level:
-            case SaturationLevel.WEAK:
-                saturation_factor = 1.3
-            case SaturationLevel.STRONG:
-                saturation_factor = 1.8
-            case _:
-                saturation_factor = 1.0
-        enhancer = ImageEnhance.Color(pil_img)
-        pil_img = enhancer.enhance(saturation_factor)
-        rgb_image = np.array(pil_img).astype(np.float64) / 255.0
-
-    # プリマルチプライしてからスケーリング・フィルタを適用
-    rgb_premult = rgb_image * alpha_channel[..., None]
-
-    match config.filter_type:
-        case FilterType.GAUSSIAN:
-            rgb_premult = gaussian(
-                rgb_premult, sigma=config.gaussian_sigma, channel_axis=-1
-            )
-        case FilterType.EROSION:
-            size = int(config.erosion_size)
-            footprint = morphology.footprint_rectangle((size, size))
-            for i in range(rgb_premult.shape[2]):
-                rgb_premult[:, :, i] = morphology.erosion(
-                    rgb_premult[:, :, i], footprint
-                )
-        case _:
-            pass
-
-    # RGBA（プリマルチプライ済みRGB+アルファ）でリサイズ
-    pil_img = Image.fromarray(
-        np.dstack(
-            (
-                (np.clip(rgb_premult, 0, 1) * 255).astype(np.uint8),
-                (np.clip(alpha_channel, 0, 1) * 255).astype(np.uint8),
-            )
-        ),
-        mode="RGBA",
-    )
-
-    new_width = max(1, int(width * config.scale_factor))
-    new_height = max(1, int(height * config.scale_factor))
-    small_img = pil_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-    small_rgba = np.array(small_img).astype(np.float64) / 255.0
-    small_alpha_array = small_rgba[:, :, 3]
-    small_array_premult = small_rgba[:, :, :3]
-
-    pixelated_img = small_img.resize((width, height), Image.Resampling.NEAREST)
-    pixelated_rgba = np.array(pixelated_img).astype(np.float64) / 255.0
-    alpha_result = pixelated_rgba[:, :, 3]
-    result_premult = pixelated_rgba[:, :, :3]
-
-    # 透過エッジの白化防止: アルファを二値化し、透明部のRGBを強制ゼロ
-    alpha_threshold = 0.5
-    alpha_result = (alpha_result > alpha_threshold).astype(np.float64)
-    small_alpha_array = (small_alpha_array > alpha_threshold).astype(np.float64)
-    result_premult *= alpha_result[..., None]
-    small_array_premult *= small_alpha_array[..., None]
-
-    # K-meansはプリマルチプライRGBで実施（アルファは除外）
-    if config.apply_kmeans and config.colors > 0:
-        original_shape = result_premult.shape
-        pixels = result_premult.reshape(-1, 3)
-
-        kmeans = KMeans(n_clusters=config.colors, random_state=42, n_init=10)
-        labels = kmeans.fit_predict(pixels)
-        centers = kmeans.cluster_centers_
-
-        result_premult = centers[labels].reshape(original_shape)
-
-        small_pixels = small_array_premult.reshape(-1, 3)
-        small_labels = kmeans.predict(small_pixels)
-        small_array_premult = centers[small_labels].reshape(small_array_premult.shape)
-
-    # アンプリマルチで元の色に戻す（透明周辺の白浮きを防ぐ）
-    eps = 1e-8
-    alpha_safe = np.maximum(alpha_result, eps)
-    result_rgb = np.where(
-        alpha_result[..., None] > 0, result_premult / alpha_safe[..., None], 0
-    )
-
-    small_alpha_safe = np.maximum(small_alpha_array, eps)
-    small_rgb = np.where(
-        small_alpha_array[..., None] > 0,
-        small_array_premult / small_alpha_safe[..., None],
-        0,
-    )
-
-    result = _merge_alpha(
-        (np.clip(result_rgb, 0, 1) * 255).astype(np.uint8),
-        (np.clip(alpha_result, 0, 1) * 255).astype(np.uint8),
-    )
-    small_array = _merge_alpha(
-        (np.clip(small_rgb, 0, 1) * 255).astype(np.uint8),
-        (np.clip(small_alpha_array, 0, 1) * 255).astype(np.uint8),
-    )
-
-    return result, small_array
+    """CPU処理を別スレッドで実行し、拡大画像と縮小画像を返す。"""
+    return await asyncio.to_thread(_process_image, image, config)
 
 
 async def pixel_art_converter(
@@ -291,6 +330,10 @@ async def pixel_art_converter(
     saturation_level: str,
     apply_color_temperature: bool,
     color_temperature_offset: int,
+    resize_method: str = "nearest",
+    apply_erosion: bool = False,
+    bilateral_sigma_color: float = 0.1,
+    bilateral_sigma_spatial: float = 3.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     UI用のインターフェース関数
@@ -328,6 +371,8 @@ async def pixel_art_converter(
     match filter_type:
         case "ガウシアンフィルタ":
             filter_enum = FilterType.GAUSSIAN
+        case "バイラテラルフィルタ":
+            filter_enum = FilterType.BILATERAL
         case "エロージョン":
             filter_enum = FilterType.EROSION
         case _:
@@ -345,6 +390,10 @@ async def pixel_art_converter(
 
     # 設定を作成
     config = PixelArtConfig(
+        resize_method=ResizeMethod(resize_method),
+        apply_erosion=apply_erosion,
+        bilateral_sigma_color=bilateral_sigma_color,
+        bilateral_sigma_spatial=bilateral_sigma_spatial,
         scale_factor=scale_factor,
         colors=colors,
         filter_type=filter_enum,
