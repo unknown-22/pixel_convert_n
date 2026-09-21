@@ -5,7 +5,13 @@ from dataclasses import replace
 import numpy as np
 from PIL import Image
 
-from pixel_art_logic import FilterType, PixelArtConfig, ResizeMethod, process_image
+from pixel_art_logic import (
+    DitheringType,
+    FilterType,
+    PixelArtConfig,
+    ResizeMethod,
+    process_image,
+)
 
 
 class PixelArtTests(unittest.TestCase):
@@ -92,6 +98,37 @@ class PixelArtTests(unittest.TestCase):
             Image.fromarray(small).resize((17, 13), Image.Resampling.NEAREST)
         )
         np.testing.assert_array_equal(result, expected)
+
+    def test_ordered_dithering_uses_only_palette_colors_and_is_deterministic(self):
+        ramp = np.linspace(0, 255, 16, dtype=np.uint8)
+        image = np.repeat(ramp[None, :, None], 16, axis=0)
+        image = np.repeat(image, 3, axis=2)
+        options = {
+            "colors": 3,
+            "scale_factor": 1,
+            "dithering_type": DitheringType.ORDERED,
+            "dithering_strength": 0.2,
+        }
+        _, dithered = self.convert(image, **options)
+        _, repeated = self.convert(image, **options)
+        _, plain = self.convert(image, colors=3, scale_factor=1)
+
+        np.testing.assert_array_equal(dithered, repeated)
+        self.assertFalse(np.array_equal(dithered, plain))
+        self.assertLessEqual(
+            len(np.unique(dithered[..., :3].reshape(-1, 3), axis=0)), 3
+        )
+
+    def test_zero_strength_dithering_matches_normal_quantization(self):
+        image = np.random.default_rng(7).integers(0, 256, (12, 12, 3), dtype=np.uint8)
+        _, plain = self.convert(image, colors=4)
+        _, dithered = self.convert(
+            image,
+            colors=4,
+            dithering_type=DitheringType.ORDERED,
+            dithering_strength=0,
+        )
+        np.testing.assert_array_equal(dithered, plain)
 
     def test_bilateral_preserves_edge_while_smoothing_noise(self):
         rng = np.random.default_rng(0)

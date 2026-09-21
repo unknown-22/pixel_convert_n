@@ -147,6 +147,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=defaults.bilateral_sigma_spatial,
         help="バイラテラルの距離範囲（入力画像のピクセル単位）",
     )
+    parser.add_argument(
+        "--dithering",
+        choices=("none", "ordered"),
+        default=defaults.dithering_type.value,
+        help="ディザリング方式 (none/ordered)",
+    )
+    parser.add_argument(
+        "--dithering-strength",
+        type=float,
+        default=defaults.dithering_strength,
+        help="orderedディザリングの強度 (0〜1、推奨0.08〜0.15)",
+    )
     return parser
 
 
@@ -173,6 +185,8 @@ async def convert_one(path: Path, args: argparse.Namespace) -> Path:
         saturation_level=_saturation_cli_to_label(args.saturation_level),
         apply_color_temperature=args.apply_color_temperature,
         color_temperature_offset=args.color_temperature_offset,
+        dithering_type=args.dithering,
+        dithering_strength=args.dithering_strength,
     )
 
     output_path = path.with_name(f"{path.stem}_converted{path.suffix}")

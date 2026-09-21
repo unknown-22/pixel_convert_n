@@ -33,6 +33,13 @@ class ResizeMethod(Enum):
     LANCZOS = "lanczos"
 
 
+class DitheringType(Enum):
+    """減色時のディザリング方式。"""
+
+    NONE = "none"
+    ORDERED = "ordered"
+
+
 @dataclass
 class PixelArtConfig:
     """ドット絵変換の設定パラメータ"""
@@ -51,6 +58,8 @@ class PixelArtConfig:
     apply_erosion: bool = False
     bilateral_sigma_color: float = 0.1  # RGB [0, 1] に対する色差
     bilateral_sigma_spatial: float = 3.0  # 入力画像上のピクセル単位
+    dithering_type: DitheringType = DitheringType.NONE
+    dithering_strength: float = 0.1  # RGB [0, 1] に加える明度差の最大幅
 
 
 def adjust_color_temperature(image: np.ndarray, temperature_offset: int) -> np.ndarray:
@@ -238,17 +247,79 @@ def _resize_rgba(
     return np.clip(small_rgb, 0, 1), small_alpha > 0.5
 
 
-def _quantize(rgb: np.ndarray, visible: np.ndarray, colors: int) -> np.ndarray:
-    """縮小画像の可視画素のみでパレットを学習する。"""
-    result = np.zeros_like(rgb)
+BAYER_4X4 = (
+    np.array(
+        [
+            [0, 8, 2, 10],
+            [12, 4, 14, 6],
+            [3, 11, 1, 9],
+            [15, 7, 13, 5],
+        ],
+        dtype=np.float32,
+    )
+    + 0.5
+) / 16 - 0.5
+
+
+def _create_palette(rgb: np.ndarray, visible: np.ndarray, colors: int) -> np.ndarray:
+    """縮小画像の可視画素のみでK-meansパレットを学習する。"""
     pixels = rgb[visible]
     if not len(pixels):
-        return result
+        return np.empty((0, 3), dtype=np.float32)
     count = min(colors, len(np.unique(pixels, axis=0)))
     kmeans = KMeans(n_clusters=count, random_state=42, n_init=10)
-    labels = kmeans.fit_predict(pixels)
-    result[visible] = kmeans.cluster_centers_[labels]
+    kmeans.fit(pixels)
+    return kmeans.cluster_centers_.astype(np.float32)
+
+
+def _nearest_palette_colors(pixels: np.ndarray, palette: np.ndarray) -> np.ndarray:
+    """メモリ使用量を抑えながら各画素を最も近いパレット色へ変換する。"""
+    mapped = np.empty_like(pixels)
+    chunk_size = 65_536
+    for start in range(0, len(pixels), chunk_size):
+        chunk = pixels[start : start + chunk_size]
+        distances = np.sum((chunk[:, None] - palette[None, :]) ** 2, axis=-1)
+        mapped[start : start + chunk_size] = palette[np.argmin(distances, axis=1)]
+    return mapped
+
+
+def _map_to_palette(
+    rgb: np.ndarray, visible: np.ndarray, palette: np.ndarray
+) -> np.ndarray:
+    """可視画素を最も近いパレット色へ置き換える。"""
+    result = np.zeros_like(rgb)
+    if len(palette):
+        result[visible] = _nearest_palette_colors(rgb[visible], palette)
     return result
+
+
+def _ordered_dither(
+    rgb: np.ndarray,
+    visible: np.ndarray,
+    palette: np.ndarray,
+    strength: float,
+) -> np.ndarray:
+    """4×4 Bayer行列で明度を揺らし、K-meansパレットへ割り当てる。"""
+    if len(palette) < 2 or strength == 0:
+        return _map_to_palette(rgb, visible, palette)
+
+    height, width = visible.shape
+    threshold_map = np.tile(
+        BAYER_4X4,
+        ((height + 3) // 4, (width + 3) // 4),
+    )[:height, :width]
+    adjusted = np.clip(rgb + threshold_map[..., None] * strength, 0, 1)
+    return _map_to_palette(adjusted, visible, palette)
+
+
+def _quantize(
+    rgb: np.ndarray, visible: np.ndarray, colors: int, config: PixelArtConfig
+) -> np.ndarray:
+    """K-meansパレットを学習し、指定方式で縮小画像を減色する。"""
+    palette = _create_palette(rgb, visible, colors)
+    if config.dithering_type == DitheringType.ORDERED:
+        return _ordered_dither(rgb, visible, palette, config.dithering_strength)
+    return _map_to_palette(rgb, visible, palette)
 
 
 def _process_image(
@@ -275,6 +346,11 @@ def _process_image(
         )
     ):
         raise ValueError("フィルターの強さは正の有限値にしてください。")
+    if (
+        not np.isfinite(config.dithering_strength)
+        or not 0 <= config.dithering_strength <= 1
+    ):
+        raise ValueError("ディザリング強度は0以上1以下にしてください。")
     normalized = image.astype(np.float32)
     if np.issubdtype(image.dtype, np.integer):
         normalized /= np.iinfo(image.dtype).max
@@ -301,7 +377,7 @@ def _process_image(
     )
     rgb, visible = _resize_rgba(rgb, alpha, size, config.resize_method)
     if config.apply_kmeans:
-        rgb = _quantize(rgb, visible, config.colors)
+        rgb = _quantize(rgb, visible, config.colors, config)
     rgb = np.where(visible[..., None], rgb, 0)
     small_array = np.dstack(
         (np.rint(rgb * 255).astype(np.uint8), visible.astype(np.uint8) * 255)
@@ -334,6 +410,8 @@ async def pixel_art_converter(
     apply_erosion: bool = False,
     bilateral_sigma_color: float = 0.1,
     bilateral_sigma_spatial: float = 3.0,
+    dithering_type: str = "none",
+    dithering_strength: float = 0.1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     UI用のインターフェース関数
@@ -394,6 +472,8 @@ async def pixel_art_converter(
         apply_erosion=apply_erosion,
         bilateral_sigma_color=bilateral_sigma_color,
         bilateral_sigma_spatial=bilateral_sigma_spatial,
+        dithering_type=DitheringType(dithering_type),
+        dithering_strength=dithering_strength,
         scale_factor=scale_factor,
         colors=colors,
         filter_type=filter_enum,

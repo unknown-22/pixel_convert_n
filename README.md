@@ -13,19 +13,13 @@ Gradioでドット絵化をするPythonプログラムです。
     - ガウシアンフィルタ
     - エロージョン
     - 減色(kmeans)
+    - 規則的ディザリング(Bayer 4×4)
     - 彩度調節(なし/弱/強)
     - 色温度調節(-35 ~ +35)
 
 TODO
 - 輪郭線の膨張(なし/弱/強)
 - コントラストを上げる(なし/弱/強)
-- ディザリング
-
-ライブラリ
-- Pillow
-- scikit‑image
-- scikit‑learn
-- gradio
 
 ### バッチ変換CLI
 
@@ -52,10 +46,12 @@ python batch_pixel_art_converter.py \
 - `--saturation-level` : `none` / `weak` / `strong`
 - `--apply-color-temperature` / `--no-apply-color-temperature`
 - `--color-temperature-offset` : 色温度オフセット（推奨 -35〜35）
+- `--dithering` : `none` / `ordered`（Bayer 4×4）
+- `--dithering-strength` : ディザリング強度（推奨 0.08〜0.15）
 
 ### 変換処理と画質の設定
 
-処理順序は「色調整 → エロージョン（任意）→ 平滑化（任意）→ 縮小 → 可視画素のみでK-means減色 → 最近傍拡大」です。
+処理順序は「色調整 → エロージョン（任意）→ 平滑化（任意）→ 縮小 → 可視画素のみでK-meansパレット生成 → ディザリングを含む減色 → 最近傍拡大」です。
 WebUIでは拡大画像と縮小画像を表示します。CLIは従来どおり縮小画像を保存します。
 
 - 縮小方法: `nearest`（既定）または `lanczos`。WebUIの「縮小方法」、CLIの `--resize-method` で選択します。
@@ -63,10 +59,10 @@ WebUIでは拡大画像と縮小画像を表示します。CLIは従来どおり
 - エロージョン: 平滑化と独立して有効化でき、先に適用されます。サイズ1は変化なし、3からの比較を推奨します。
 - バイラテラル: 15×15近傍を使用。色差範囲はRGB 0〜1単位（既定0.1）、距離範囲は入力画像のピクセル単位（既定3）です。参考ツールのOpenCV実装と数値的に同一ではありません。
 - 透過: リサイズ時はRGBとアルファを乗算して処理し、元の色を復元した後にアルファを閾値0.5で二値化します。透明画素は減色の学習から除外します。
+- ディザリング: 4×4 Bayer行列で縮小画像の明度を規則的に変化させ、K-meansパレット内の色だけで中間色を表現します。K-meansが無効な場合は適用されません。
 
 ```bash
-. .venv/bin/activate
-python batch_pixel_art_converter.py /path/to/directory \
+uv run python batch_pixel_art_converter.py /path/to/directory \
   --scale-factor 0.25 --colors 16 --resize-method nearest \
   --filter-type bilateral --bilateral-sigma-color 0.1 \
   --bilateral-sigma-spatial 3 --apply-erosion --erosion-size 3
@@ -77,7 +73,7 @@ python batch_pixel_art_converter.py /path/to/directory \
 ### 検証
 
 ```bash
-. .venv/bin/activate
-ruff check
-python -m unittest discover -s tests -v
+uv run ruff check
+uv run ty check
+uv run pytest
 ```

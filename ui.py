@@ -56,6 +56,24 @@ def create_ui() -> gr.Blocks:
 
                     apply_kmeans = gr.Checkbox(value=True, label="K-meansで減色する")
 
+                    dithering_type = gr.Radio(
+                        choices=[
+                            ("なし", "none"),
+                            ("規則的（Bayer 4×4）", "ordered"),
+                        ],
+                        value="none",
+                        label="ディザリング",
+                    )
+
+                    dithering_strength = gr.Slider(
+                        minimum=0,
+                        maximum=0.25,
+                        value=0.1,
+                        step=0.01,
+                        label="ディザリング強度",
+                        visible=False,
+                    )
+
                 with gr.Group():
                     gr.Markdown("## 画像調整")
                     saturation_level = gr.Radio(
@@ -156,6 +174,12 @@ def create_ui() -> gr.Blocks:
             outputs=erosion_size,
         )
 
+        dithering_type.change(
+            fn=lambda value: gr.update(visible=value == "ordered"),
+            inputs=dithering_type,
+            outputs=dithering_strength,
+        )
+
         # 色温度調整の表示・非表示制御
         def update_color_temperature_visibility(apply_temp: bool) -> dict[str, Any]:
             """
@@ -203,6 +227,8 @@ def create_ui() -> gr.Blocks:
                 apply_erosion,
                 bilateral_sigma_color,
                 bilateral_sigma_spatial,
+                dithering_type,
+                dithering_strength,
             ],
             outputs=[output_image, small_image],
         )
