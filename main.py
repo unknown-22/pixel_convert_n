@@ -3,20 +3,18 @@
 UIとロジック部分を分離し、このファイルからアプリケーションを起動する
 """
 
-import asyncio
-
 from ui import create_ui
 
 
-async def main():
+def main() -> None:
     """
     メイン関数: アプリケーションのエントリーポイント
     Gradioインターフェースを作成して起動する
     """
     interface = create_ui()
-    interface.queue()
+    interface.queue(default_concurrency_limit=1)
     interface.launch(share=False)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

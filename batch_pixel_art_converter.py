@@ -8,55 +8,35 @@ import numpy as np
 from PIL import Image
 
 from pixel_art_logic import (
+    MAX_COLORS,
+    DitheringType,
     FilterType,
     PixelArtConfig,
+    ResizeMethod,
     SaturationLevel,
-    pixel_art_converter,
+    process_image,
 )
 
 
-def _filter_enum_to_cli(value: FilterType) -> str:
-    match value:
-        case FilterType.GAUSSIAN:
-            return "gaussian"
-        case FilterType.BILATERAL:
-            return "bilateral"
-        case FilterType.EROSION:
-            return "erosion"
-        case _:
-            return "none"
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("1以上を指定してください")
+    return parsed
 
 
-def _saturation_enum_to_cli(value: SaturationLevel) -> str:
-    match value:
-        case SaturationLevel.WEAK:
-            return "weak"
-        case SaturationLevel.STRONG:
-            return "strong"
-        case _:
-            return "none"
+def _color_count(value: str) -> int:
+    parsed = int(value)
+    if not 1 <= parsed <= MAX_COLORS:
+        raise argparse.ArgumentTypeError(f"1以上{MAX_COLORS}以下を指定してください")
+    return parsed
 
 
-def _filter_cli_to_label(value: str) -> str:
-    match value:
-        case "gaussian":
-            return "ガウシアンフィルタ"
-        case "bilateral":
-            return "バイラテラルフィルタ"
-        case "erosion":
-            return "エロージョン"
-        case _:
-            return ""
-
-
-def _saturation_cli_to_label(value: str) -> str:
-    match value:
-        case "weak":
-            return "弱"
-        case "strong":
-            return "強"
-        case _:
-            return ""
+def _temperature_offset(value: str) -> int:
+    parsed = int(value)
+    if not -35 <= parsed <= 35:
+        raise argparse.ArgumentTypeError("-35以上35以下を指定してください")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,14 +57,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--colors",
-        type=int,
+        type=_color_count,
         default=defaults.colors,
         help="減色後の色数",
     )
     parser.add_argument(
         "--filter-type",
         choices=("none", "gaussian", "bilateral", "erosion"),
-        default=_filter_enum_to_cli(defaults.filter_type),
+        default=defaults.filter_type.value,
         help="フィルター種別 (none/gaussian/bilateral/erosion)",
     )
     parser.add_argument(
@@ -95,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--erosion-size",
-        type=int,
+        type=_positive_int,
         default=defaults.erosion_size,
         help="エロージョンのカーネルサイズ",
     )
@@ -108,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--saturation-level",
         choices=("none", "weak", "strong"),
-        default=_saturation_enum_to_cli(defaults.saturation_level),
+        default=defaults.saturation_level.value,
         help="彩度調整の強さ (none/weak/strong)",
     )
     parser.add_argument(
@@ -119,9 +99,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--color-temperature-offset",
-        type=int,
+        type=_temperature_offset,
         default=defaults.color_temperature_offset,
-        help="色温度オフセット (-35〜35 推奨)",
+        help="色温度オフセット (-35〜35)",
     )
     parser.add_argument(
         "--resize-method",
@@ -159,42 +139,54 @@ def build_parser() -> argparse.ArgumentParser:
         default=defaults.dithering_strength,
         help="orderedディザリングの強度 (0〜1、推奨0.08〜0.15)",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="既存の *_converted.png を上書きする",
+    )
     return parser
 
 
 def list_png_files(root: Path) -> list[Path]:
-    return [path for path in root.rglob("*.png") if path.is_file()]
+    return sorted(
+        path
+        for path in root.rglob("*.png")
+        if path.is_file() and not path.stem.endswith("_converted")
+    )
 
 
-async def convert_one(path: Path, args: argparse.Namespace) -> Path:
+async def convert_one(path: Path, args: argparse.Namespace) -> Path | None:
+    output_path = path.with_name(f"{path.stem}_converted{path.suffix}")
+    if output_path.exists() and not args.overwrite:
+        return None
+
     with Image.open(path) as img:
         input_array = np.array(img.convert("RGBA"))
 
-    _, small_array = await pixel_art_converter(
-        input_array,
-        resize_method=args.resize_method,
+    config = PixelArtConfig(
+        resize_method=ResizeMethod(args.resize_method),
         apply_erosion=args.apply_erosion,
         bilateral_sigma_color=args.bilateral_sigma_color,
         bilateral_sigma_spatial=args.bilateral_sigma_spatial,
         scale_factor=args.scale_factor,
         colors=args.colors,
-        filter_type=_filter_cli_to_label(args.filter_type),
+        filter_type=FilterType(args.filter_type),
         gaussian_sigma=args.gaussian_sigma,
         erosion_size=args.erosion_size,
         apply_kmeans=args.apply_kmeans,
-        saturation_level=_saturation_cli_to_label(args.saturation_level),
+        saturation_level=SaturationLevel(args.saturation_level),
         apply_color_temperature=args.apply_color_temperature,
         color_temperature_offset=args.color_temperature_offset,
-        dithering_type=args.dithering,
+        dithering_type=DitheringType(args.dithering),
         dithering_strength=args.dithering_strength,
     )
+    _, small_array = await process_image(input_array, config)
 
-    output_path = path.with_name(f"{path.stem}_converted{path.suffix}")
     Image.fromarray(small_array).save(output_path)
     return output_path
 
 
-async def run(args: argparse.Namespace) -> None:
+async def run(args: argparse.Namespace) -> int:
     target_dir = args.directory
     if not target_dir.is_dir():
         msg = f"指定パスがディレクトリではありません: {target_dir}"
@@ -203,20 +195,31 @@ async def run(args: argparse.Namespace) -> None:
     png_files = list_png_files(target_dir)
     if not png_files:
         print("PNGファイルが見つかりませんでした。")
-        return
+        return 0
 
+    converted = 0
+    skipped = 0
+    failed = 0
     for path in png_files:
         try:
             output_path = await convert_one(path, args)
-            print(f"converted: {path} -> {output_path}")
+            if output_path is None:
+                skipped += 1
+                print(f"skipped: {path} (出力ファイルが存在します)")
+            else:
+                converted += 1
+                print(f"converted: {path} -> {output_path}")
         except (OSError, RuntimeError, ValueError) as exc:
+            failed += 1
             print(f"failed: {path} ({exc})")
+    print(f"summary: converted={converted}, skipped={skipped}, failed={failed}")
+    return 1 if failed else 0
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    asyncio.run(run(args))
+    raise SystemExit(asyncio.run(run(args)))
 
 
 if __name__ == "__main__":

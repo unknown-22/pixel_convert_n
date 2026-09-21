@@ -1,7 +1,7 @@
 [project]
 name = "pixel-convert-n"
 version = "0.1.0"
-description = "Add your description here"
+description = "Gradio-based pixel art converter with palette reduction and image filters"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

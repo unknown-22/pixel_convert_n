@@ -1,39 +1,40 @@
 import asyncio
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import StrEnum
 
 import numpy as np
 from PIL import Image, ImageEnhance
 from skimage import morphology
 from skimage.filters import gaussian
+from skimage.restoration import denoise_bilateral
 from sklearn.cluster import KMeans
 
 
-class SaturationLevel(Enum):
+class SaturationLevel(StrEnum):
     """彩度調整レベルの列挙型"""
 
-    NONE = auto()
-    WEAK = auto()
-    STRONG = auto()
+    NONE = "none"
+    WEAK = "weak"
+    STRONG = "strong"
 
 
-class FilterType(Enum):
+class FilterType(StrEnum):
     """フィルタータイプの列挙型"""
 
-    NONE = auto()
-    GAUSSIAN = auto()
-    EROSION = auto()  # 既存の設定との互換性を維持
-    BILATERAL = auto()
+    NONE = "none"
+    GAUSSIAN = "gaussian"
+    EROSION = "erosion"  # 既存の設定との互換性を維持
+    BILATERAL = "bilateral"
 
 
-class ResizeMethod(Enum):
+class ResizeMethod(StrEnum):
     """縮小時の補間方式。拡大には常に最近傍を使う。"""
 
     NEAREST = "nearest"
     LANCZOS = "lanczos"
 
 
-class DitheringType(Enum):
+class DitheringType(StrEnum):
     """減色時のディザリング方式。"""
 
     NONE = "none"
@@ -62,6 +63,35 @@ class PixelArtConfig:
     dithering_strength: float = 0.1  # RGB [0, 1] に加える明度差の最大幅
 
 
+MAX_KMEANS_SAMPLES = 100_000
+MAX_COLORS = 256
+MAX_DISTANCE_ELEMENTS = 1_000_000
+
+
+def _temperature_rgb(temperature: int) -> np.ndarray:
+    """色温度をRGB係数に変換する。"""
+    temp = max(3000, min(10000, temperature)) / 100
+
+    if temp <= 66:
+        red = 255
+    else:
+        red = 329.698727446 * ((temp - 60) ** -0.1332047592)
+
+    if temp <= 66:
+        green = 99.4708025861 * np.log(temp) - 161.1195681661
+    else:
+        green = 288.1221695283 * ((temp - 60) ** -0.0755148492)
+
+    if temp >= 66:
+        blue = 255
+    elif temp <= 19:
+        blue = 0
+    else:
+        blue = 138.5177312231 * np.log(temp - 10) - 305.0447927307
+
+    return np.clip(np.array([red, green, blue], dtype=np.float32), 0, 255) / 255
+
+
 def adjust_color_temperature(image: np.ndarray, temperature_offset: int) -> np.ndarray:
     """
     画像の色温度を調整する
@@ -80,60 +110,11 @@ def adjust_color_temperature(image: np.ndarray, temperature_offset: int) -> np.n
     np.ndarray
         色温度調整後の画像
     """
-    # ベース色温度は6500Kとし、オフセットを逆向きに適用
-    # プラス値で暖色系にするため、色温度を下げる
     base_temperature = 6500
     temperature = base_temperature - (temperature_offset * 100)
-
-    # 色温度に基づくRGB係数の計算
-    # 参考: http://www.tannerhelland.com/4435/convert-temperature-rgb-algorithm-code/
-
-    temp = max(3000, min(10000, temperature))  # 範囲を制限
-    temp = temp / 100
-
-    # 赤成分の計算
-    if temp <= 66:
-        red = 255
-    else:
-        red = temp - 60
-        red = 329.698727446 * (red**-0.1332047592)
-        red = max(0, min(255, red))
-
-    # 緑成分の計算
-    if temp <= 66:
-        green = temp
-        green = 99.4708025861 * np.log(green) - 161.1195681661
-    else:
-        green = temp - 60
-        green = 288.1221695283 * (green**-0.0755148492)
-    green = max(0, min(255, green))
-
-    # 青成分の計算
-    if temp >= 66:
-        blue = 255
-    elif temp <= 19:
-        blue = 0
-    else:
-        blue = temp - 10
-        blue = 138.5177312231 * np.log(blue) - 305.0447927307
-        blue = max(0, min(255, blue))
-
-    # RGB係数を正規化
-    red_factor = red / 255.0
-    green_factor = green / 255.0
-    blue_factor = blue / 255.0
-
-    # 画像に色温度補正を適用
-    adjusted_image = image.copy()
-    if len(adjusted_image.shape) == 3:  # カラー画像の場合
-        adjusted_image[:, :, 0] *= red_factor  # R
-        adjusted_image[:, :, 1] *= green_factor  # G
-        adjusted_image[:, :, 2] *= blue_factor  # B
-
-        # 値の範囲をクランプ
-        adjusted_image = np.clip(adjusted_image, 0, 1)
-
-    return adjusted_image
+    # 6500Kの係数を基準にすることで、オフセット0を完全な無変換にする。
+    factors = _temperature_rgb(temperature) / _temperature_rgb(base_temperature)
+    return np.clip(image * factors, 0, 1)
 
 
 def _split_alpha(image: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
@@ -159,30 +140,23 @@ def _split_alpha(image: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
 def _bilateral_filter(
     rgb: np.ndarray, alpha: np.ndarray, sigma_color: float, sigma_spatial: float
 ) -> np.ndarray:
-    """15×15の近傍で、色差・距離・アルファによる重み付き平滑化を行う。"""
-    radius = 7
-    height, width = alpha.shape
-    padded_rgb = np.pad(rgb, ((radius, radius), (radius, radius), (0, 0)), mode="edge")
-    padded_alpha = np.pad(alpha, radius, mode="edge")
-    total = np.zeros_like(rgb)
-    weights = np.zeros_like(alpha)
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            y, x = dy + radius, dx + radius
-            neighbor = padded_rgb[y : y + height, x : x + width]
-            neighbor_alpha = padded_alpha[y : y + height, x : x + width]
-            distance = np.sum((neighbor - rgb) ** 2, axis=-1)
-            weight = (
-                np.exp(
-                    -distance / (2 * sigma_color**2)
-                    - (dx**2 + dy**2) / (2 * sigma_spatial**2)
-                )
-                * neighbor_alpha
-            )
-            total += neighbor * weight[..., None]
-            weights += weight
+    """乗算済みRGBAをまとめて平滑化し、透明画素の隠れたRGBの混入を防ぐ。"""
+    premultiplied_rgba = np.dstack((rgb * alpha[..., None], alpha))
+    filtered = denoise_bilateral(
+        premultiplied_rgba,
+        win_size=15,
+        sigma_color=sigma_color,
+        sigma_spatial=sigma_spatial,
+        bins=1_000,
+        mode="edge",
+        channel_axis=-1,
+    ).astype(np.float32, copy=False)
+    filtered_alpha = filtered[..., 3]
     return np.divide(
-        total, weights[..., None], out=rgb.copy(), where=weights[..., None] > 0
+        filtered[..., :3],
+        filtered_alpha[..., None],
+        out=rgb.copy(),
+        where=filtered_alpha[..., None] > 1e-8,
     )
 
 
@@ -266,16 +240,25 @@ def _create_palette(rgb: np.ndarray, visible: np.ndarray, colors: int) -> np.nda
     pixels = rgb[visible]
     if not len(pixels):
         return np.empty((0, 3), dtype=np.float32)
-    count = min(colors, len(np.unique(pixels, axis=0)))
+    if len(pixels) > MAX_KMEANS_SAMPLES:
+        indices = (
+            np.arange(MAX_KMEANS_SAMPLES, dtype=np.int64)
+            * len(pixels)
+            // MAX_KMEANS_SAMPLES
+        )
+        training_pixels = pixels[indices]
+    else:
+        training_pixels = pixels
+    count = min(colors, len(np.unique(training_pixels, axis=0)))
     kmeans = KMeans(n_clusters=count, random_state=42, n_init=10)
-    kmeans.fit(pixels)
+    kmeans.fit(training_pixels)
     return kmeans.cluster_centers_.astype(np.float32)
 
 
 def _nearest_palette_colors(pixels: np.ndarray, palette: np.ndarray) -> np.ndarray:
     """メモリ使用量を抑えながら各画素を最も近いパレット色へ変換する。"""
     mapped = np.empty_like(pixels)
-    chunk_size = 65_536
+    chunk_size = max(1, MAX_DISTANCE_ELEMENTS // len(palette))
     for start in range(0, len(pixels), chunk_size):
         chunk = pixels[start : start + chunk_size]
         distances = np.sum((chunk[:, None] - palette[None, :]) ** 2, axis=-1)
@@ -335,8 +318,12 @@ def _process_image(
         raise ValueError("RGBまたはRGBA画像を指定してください。")
     if not 0 < config.scale_factor <= 1:
         raise ValueError("縮小率は0より大きく1以下にしてください。")
-    if config.colors < 1 or config.erosion_size < 1:
-        raise ValueError("色数とエロージョンのサイズは1以上にしてください。")
+    if not 1 <= config.colors <= MAX_COLORS:
+        raise ValueError(f"色数は1以上{MAX_COLORS}以下にしてください。")
+    if config.erosion_size < 1:
+        raise ValueError("エロージョンのサイズは1以上にしてください。")
+    if not -35 <= config.color_temperature_offset <= 35:
+        raise ValueError("色温度オフセットは-35以上35以下にしてください。")
     if any(
         not np.isfinite(value) or value <= 0
         for value in (
@@ -395,6 +382,37 @@ async def process_image(
     return await asyncio.to_thread(_process_image, image, config)
 
 
+def parse_filter_type(value: FilterType | str) -> FilterType:
+    """UIの旧日本語ラベルと安定した機械用値をEnumに変換する。"""
+    if isinstance(value, FilterType):
+        return value
+    legacy_labels = {
+        "": FilterType.NONE,
+        "なし": FilterType.NONE,
+        "ガウシアンフィルタ": FilterType.GAUSSIAN,
+        "バイラテラルフィルタ": FilterType.BILATERAL,
+        "エロージョン": FilterType.EROSION,
+    }
+    if value in legacy_labels:
+        return legacy_labels[value]
+    return FilterType(value)
+
+
+def parse_saturation_level(value: SaturationLevel | str) -> SaturationLevel:
+    """UIの旧日本語ラベルと安定した機械用値をEnumに変換する。"""
+    if isinstance(value, SaturationLevel):
+        return value
+    legacy_labels = {
+        "": SaturationLevel.NONE,
+        "なし": SaturationLevel.NONE,
+        "弱": SaturationLevel.WEAK,
+        "強": SaturationLevel.STRONG,
+    }
+    if value in legacy_labels:
+        return legacy_labels[value]
+    return SaturationLevel(value)
+
+
 async def pixel_art_converter(
     input_img: np.ndarray,
     scale_factor: float,
@@ -444,29 +462,6 @@ async def pixel_art_converter(
     tuple[np.ndarray, np.ndarray]
         (ドット絵画像, 縮小画像)
     """
-    # フィルタータイプの文字列をEnum型に変換
-    filter_enum = FilterType.NONE
-    match filter_type:
-        case "ガウシアンフィルタ":
-            filter_enum = FilterType.GAUSSIAN
-        case "バイラテラルフィルタ":
-            filter_enum = FilterType.BILATERAL
-        case "エロージョン":
-            filter_enum = FilterType.EROSION
-        case _:
-            filter_enum = FilterType.NONE
-
-    # 彩度調整レベルの文字列をEnum型に変換
-    saturation_enum = SaturationLevel.NONE
-    match saturation_level:
-        case "弱":
-            saturation_enum = SaturationLevel.WEAK
-        case "強":
-            saturation_enum = SaturationLevel.STRONG
-        case _:
-            saturation_enum = SaturationLevel.NONE
-
-    # 設定を作成
     config = PixelArtConfig(
         resize_method=ResizeMethod(resize_method),
         apply_erosion=apply_erosion,
@@ -476,14 +471,13 @@ async def pixel_art_converter(
         dithering_strength=dithering_strength,
         scale_factor=scale_factor,
         colors=colors,
-        filter_type=filter_enum,
+        filter_type=parse_filter_type(filter_type),
         gaussian_sigma=gaussian_sigma,
         erosion_size=erosion_size,
         apply_kmeans=apply_kmeans,
-        saturation_level=saturation_enum,
+        saturation_level=parse_saturation_level(saturation_level),
         apply_color_temperature=apply_color_temperature,
         color_temperature_offset=color_temperature_offset,
     )
 
-    # 画像処理を実行
     return await process_image(input_img, config)

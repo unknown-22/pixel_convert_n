@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -10,6 +11,11 @@ from pixel_art_logic import (
     FilterType,
     PixelArtConfig,
     ResizeMethod,
+    SaturationLevel,
+    adjust_color_temperature,
+    parse_filter_type,
+    parse_saturation_level,
+    pixel_art_converter,
     process_image,
 )
 
@@ -69,9 +75,7 @@ class PixelArtTests(unittest.TestCase):
                     np.testing.assert_array_equal(small[small[..., 3] == 0], 0)
                     np.testing.assert_allclose(
                         small[small[..., 3] > 0, :3],
-                        np.full_like(
-                            small[small[..., 3] > 0, :3], [200, 100, 50]
-                        ),
+                        np.full_like(small[small[..., 3] > 0, :3], [200, 100, 50]),
                         atol=1,
                     )
 
@@ -158,6 +162,73 @@ class PixelArtTests(unittest.TestCase):
                 process_image(image, replace(config, apply_erosion=True))
             )
             self.assertLess(eroded[..., :3].sum(), plain[..., :3].sum())
+
+    def test_zero_temperature_offset_is_exact_identity(self):
+        image = np.random.default_rng(10).random((8, 8, 3), dtype=np.float32)
+        np.testing.assert_array_equal(adjust_color_temperature(image, 0), image)
+
+    def test_temperature_direction(self):
+        white = np.full((1, 1, 3), 0.5, dtype=np.float32)
+        warm = adjust_color_temperature(white, 20)[0, 0]
+        cool = adjust_color_temperature(white, -20)[0, 0]
+        self.assertGreater(warm[0] / warm[2], 1)
+        self.assertLess(cool[0] / cool[2], 1)
+
+    def test_temperature_offset_is_validated(self):
+        image = np.zeros((1, 1, 3), dtype=np.uint8)
+        with self.assertRaisesRegex(ValueError, "-35"):
+            self.convert(image, color_temperature_offset=36)
+
+    def test_kmeans_training_is_deterministically_capped(self):
+        image = np.random.default_rng(11).random((400, 300, 3), dtype=np.float32)
+
+        class FakeKMeans:
+            def __init__(self, n_clusters, **_options):
+                self.n_clusters = n_clusters
+
+            def fit(self, pixels):
+                self.fit_pixels = pixels.copy()
+                self.cluster_centers_ = pixels[: self.n_clusters]
+                return self
+
+        first = FakeKMeans(1)
+        second = FakeKMeans(1)
+        with patch("pixel_art_logic.KMeans", side_effect=[first, second]):
+            self.convert(image, scale_factor=1, colors=4)
+            self.convert(image, scale_factor=1, colors=4)
+
+        self.assertEqual(len(first.fit_pixels), 100_000)
+        np.testing.assert_array_equal(first.fit_pixels, second.fit_pixels)
+
+    def test_machine_values_and_legacy_labels_are_supported(self):
+        self.assertEqual(parse_filter_type("gaussian"), FilterType.GAUSSIAN)
+        self.assertEqual(parse_filter_type("ガウシアンフィルタ"), FilterType.GAUSSIAN)
+        self.assertEqual(parse_saturation_level("weak"), SaturationLevel.WEAK)
+        self.assertEqual(parse_saturation_level("弱"), SaturationLevel.WEAK)
+
+    def test_ui_adapter_machine_values_match_legacy_labels(self):
+        image = np.full((4, 4, 3), [100, 150, 200], dtype=np.uint8)
+
+        def convert(filter_type: str, saturation_level: str):
+            return asyncio.run(
+                pixel_art_converter(
+                    input_img=image,
+                    scale_factor=0.5,
+                    colors=2,
+                    filter_type=filter_type,
+                    gaussian_sigma=1,
+                    erosion_size=1,
+                    apply_kmeans=False,
+                    saturation_level=saturation_level,
+                    apply_color_temperature=False,
+                    color_temperature_offset=0,
+                )
+            )
+
+        machine = convert("gaussian", "weak")
+        legacy = convert("ガウシアンフィルタ", "弱")
+        for actual, expected in zip(machine, legacy, strict=True):
+            np.testing.assert_array_equal(actual, expected)
 
 
 if __name__ == "__main__":

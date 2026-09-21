@@ -27,7 +27,7 @@ def create_ui() -> gr.Blocks:
                     type="numpy",
                     sources="upload",
                     format="png",
-                    image_mode="RGBA",  # 透過情報を保持
+                    image_mode="RGBA",
                     elem_classes="input-image",
                 )
 
@@ -77,8 +77,8 @@ def create_ui() -> gr.Blocks:
                 with gr.Group():
                     gr.Markdown("## 画像調整")
                     saturation_level = gr.Radio(
-                        choices=["なし", "弱", "強"],
-                        value="なし",
+                        choices=[("なし", "none"), ("弱", "weak"), ("強", "strong")],
+                        value="none",
                         label="彩度調整",
                     )
 
@@ -99,8 +99,12 @@ def create_ui() -> gr.Blocks:
                 with gr.Group():
                     gr.Markdown("## フィルター設定")
                     filter_type = gr.Radio(
-                        choices=["なし", "ガウシアンフィルタ", "バイラテラルフィルタ"],
-                        value="なし",
+                        choices=[
+                            ("なし", "none"),
+                            ("ガウシアンフィルタ", "gaussian"),
+                            ("バイラテラルフィルタ", "bilateral"),
+                        ],
+                        value="none",
                         label="平滑化フィルター",
                     )
 
@@ -144,6 +148,9 @@ def create_ui() -> gr.Blocks:
                     )
 
                 convert_btn = gr.Button("変換", variant="primary")
+                gr.Markdown(
+                    "※ 透明境界は色にじみを防いで処理し、出力の透明度は透明／不透明に二値化します。"
+                )
 
             with gr.Column(), gr.Row():
                 with gr.Column(scale=3):
@@ -163,9 +170,9 @@ def create_ui() -> gr.Blocks:
 
         def update_filter_settings(filter_type: str) -> tuple[dict, dict, dict]:
             return (
-                gr.update(visible=filter_type == "ガウシアンフィルタ"),
-                gr.update(visible=filter_type == "バイラテラルフィルタ"),
-                gr.update(visible=filter_type == "バイラテラルフィルタ"),
+                gr.update(visible=filter_type == "gaussian"),
+                gr.update(visible=filter_type == "bilateral"),
+                gr.update(visible=filter_type == "bilateral"),
             )
 
         apply_erosion.change(
